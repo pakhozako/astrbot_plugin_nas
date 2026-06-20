@@ -1,15 +1,17 @@
 """
-NAS 助手 - AstrBot 私聊文件自动归档插件
-自动将私聊文件分类保存到本地磁盘/NAS，支持文件管理、搜索、去重等
+NAS 助手 - AstrBot 私聊文件自动归档插件 v2.0.0
+自动将私聊文件分类保存到本地磁盘/NAS，支持文件管理、搜索、去重、删除二次确认
 """
 
 import os
 import shutil
 import time
-import stat
 import hashlib
+import sqlite3
+import threading
 from pathlib import Path
 from datetime import datetime
+from collections import defaultdict
 
 from astrbot.api.message_components import *
 from astrbot.api.event import filter, AstrMessageEvent
@@ -46,7 +48,6 @@ class FileClassifier:
 # ==================== 工具函数 ====================
 
 def file_hash(path: str) -> str:
-    """计算文件 MD5"""
     h = hashlib.md5()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
@@ -62,32 +63,175 @@ def format_size(size: int) -> str:
     return f"{size:.1f}PB"
 
 
+# ==================== SQLite 索引 ====================
+
+class FileIndex:
+    """文件索引数据库，用于去重和快速搜索"""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS files (
+                    hash TEXT PRIMARY KEY,
+                    path TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    category TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
+            conn.commit()
+
+    def has_hash(self, file_hash: str) -> str | None:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT path FROM files WHERE hash=?", (file_hash,)).fetchone()
+            return row[0] if row else None
+
+    def add(self, file_hash: str, path: str, name: str, size: int, category: str):
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?, ?)",
+                (file_hash, path, name, size, category, int(time.time()))
+            )
+            conn.commit()
+
+    def remove(self, path: str):
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM files WHERE path=?", (path,))
+            conn.commit()
+
+    def search(self, keyword: str) -> list:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT path, name, size, category FROM files WHERE name LIKE ?",
+                (f"%{keyword}%",)
+            ).fetchall()
+            return [{"path": r[0], "name": r[1], "size": r[2], "category": r[3]} for r in rows]
+
+    def find_by_name(self, name: str) -> list:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT path, name, size, category FROM files WHERE name=?",
+                (name,)
+            ).fetchall()
+            return [{"path": r[0], "name": r[1], "size": r[2], "category": r[3]} for r in rows]
+
+    def get_stats(self) -> dict:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT category, COUNT(*), SUM(size) FROM files GROUP BY category").fetchall()
+            total_count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            total_size = conn.execute("SELECT COALESCE(SUM(size),0) FROM files").fetchone()[0]
+            stats = {}
+            for cat, count, size in rows:
+                stats[cat] = (count, size or 0)
+            return {"categories": stats, "total_count": total_count, "total_size": total_size}
+
+    def scan_and_build(self, root: Path):
+        """扫描目录建立索引"""
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM files")
+            for cat in FileClassifier.get_all_categories():
+                cat_dir = root / cat
+                if not cat_dir.exists():
+                    continue
+                for f in cat_dir.iterdir():
+                    if not f.is_file() or f.is_symlink():
+                        continue
+                    try:
+                        h = file_hash(str(f))
+                        size = f.stat().st_size
+                        conn.execute(
+                            "INSERT OR IGNORE INTO files VALUES (?, ?, ?, ?, ?, ?)",
+                            (h, str(f), f.name, size, cat, int(f.stat().st_mtime))
+                        )
+                    except Exception:
+                        continue
+            conn.commit()
+
+
+# ==================== 异步日志 ====================
+
+class AsyncLogger:
+    """异步日志写入，避免阻塞主线程"""
+
+    def __init__(self, log_dir: Path, enabled: bool = True):
+        self.log_dir = log_dir
+        self.enabled = enabled
+        self._queue = []
+        self._lock = threading.Lock()
+        self._flush_interval = 5
+        self._last_flush = time.time()
+        if enabled:
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+    def log(self, msg: str):
+        if not self.enabled:
+            return
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            self._queue.append(f"[{ts}] {msg}\n")
+            if time.time() - self._last_flush > self._flush_interval:
+                self._flush()
+
+    def _flush(self):
+        if not self._queue:
+            return
+        try:
+            log_file = self.log_dir / "nas.log"
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.writelines(self._queue)
+            self._queue.clear()
+            self._last_flush = time.time()
+        except Exception:
+            pass
+
+    def flush(self):
+        with self._lock:
+            self._flush()
+
+
 # ==================== 核心插件 ====================
 
-@register("NAS 助手", "pakhozako", "私聊文件自动归档到本地磁盘/NAS", "1.0.0")
+@register("NAS 助手", "pakhozako", "私聊文件自动归档到本地磁盘/NAS", "v2.0.0")
 class NASPlugin(Star):
     """NAS 助手插件"""
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         cfg = config or {}
-        self.root = Path(cfg.get("save_root", r"D:\NAS")).resolve()
+        self.root = Path(cfg.get("save_root", str(Path("data/plugin_data/astrbot_plugin_nas")))).resolve()
         self.allowed = set(str(u) for u in cfg.get("allowed_users", []))
         self.admins = set(str(u) for u in cfg.get("admin_users", []))
         self.max_size = int(cfg.get("max_file_size", 2048)) * 1024 * 1024
         self.auto_save = bool(cfg.get("auto_save_enabled", True))
-        self.auto_preview = bool(cfg.get("auto_preview", True))
         self.dedup = bool(cfg.get("dedup_enabled", True))
         self.confirm_ttl = int(cfg.get("delete_confirm_ttl", 120))
         self.log_enabled = bool(cfg.get("log_enabled", True))
-        self._delete_waiting = {}
+        self._delete_pending = {}  # {uid: {path, name, sig, time}}
 
         self._init_dirs()
+        self._init_index()
+        self._init_logger()
         print(f"[NAS] 根目录: {self.root} | 自动保存: {self.auto_save}")
 
     def _init_dirs(self):
         for cat in FileClassifier.get_all_categories():
             (self.root / cat).mkdir(parents=True, exist_ok=True)
+
+    def _init_index(self):
+        db_path = str(self.root / "files.db")
+        self.index = FileIndex(db_path)
+        self.index.scan_and_build(self.root)
+
+    def _init_logger(self):
+        self.logger = AsyncLogger(self.root / "logs", self.log_enabled)
 
     # ---------- 安全工具 ----------
 
@@ -104,17 +248,12 @@ class NASPlugin(Star):
         except ValueError:
             return False
 
-    def _log(self, msg: str):
-        if not self.log_enabled:
-            return
-        log_dir = self.root / "logs"
-        log_dir.mkdir(exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            with open(log_dir / "nas.log", "a", encoding="utf-8") as f:
-                f.write(f"[{ts}] {msg}\n")
-        except Exception:
-            pass
+    def _cleanup_pending(self):
+        now = time.time()
+        expired = [uid for uid, info in self._delete_pending.items()
+                   if now - info["time"] > self.confirm_ttl]
+        for uid in expired:
+            self._delete_pending.pop(uid, None)
 
     # ---------- 核心：自动接收 ----------
 
@@ -131,7 +270,7 @@ class NASPlugin(Star):
             if not isinstance(comp, (File, Image, Video)):
                 continue
 
-            # 获取文件路径
+            # P0-2: 软链接保护
             source = None
             if hasattr(comp, 'get_file'):
                 try:
@@ -147,22 +286,35 @@ class NASPlugin(Star):
             if not source or not os.path.exists(source):
                 continue
 
+            # P1-7: 软链接检查
+            if os.path.islink(source):
+                yield event.plain_result("跳过软链接文件")
+                return
+
+            # P0-2: 文件大小限制
+            try:
+                file_size = os.path.getsize(source)
+            except OSError:
+                continue
+
+            if file_size > self.max_size:
+                yield event.plain_result(f"文件超过限制：{format_size(file_size)} (上限 {format_size(self.max_size)})")
+                return
+
             # 确定文件名
             name = getattr(comp, 'name', None) or os.path.basename(source)
             if not name:
                 name = f"file_{int(time.time())}"
 
-            # 去重检测
+            # P0-3: SQLite 去重
             if self.dedup:
                 src_hash = file_hash(source)
-                for cat in FileClassifier.get_all_categories():
-                    cat_dir = self.root / cat
-                    if not cat_dir.exists():
-                        continue
-                    for f in cat_dir.iterdir():
-                        if f.is_file() and file_hash(str(f)) == src_hash:
-                            yield event.plain_result(f"文件已存在，跳过: [{cat}] {f.name}")
-                            return
+                existing = self.index.has_hash(src_hash)
+                if existing:
+                    yield event.plain_result(f"文件已存在，跳过: {Path(existing).name}")
+                    return
+            else:
+                src_hash = file_hash(source)
 
             # 自动分类
             category = FileClassifier.get_category(name)
@@ -180,14 +332,14 @@ class NASPlugin(Star):
             # 复制文件
             try:
                 shutil.copy2(source, save_path)
-                size = save_path.stat().st_size
-                self._log(f"SAVE | {uid} | {category}/{save_path.name} | {format_size(size)}")
+                self.index.add(src_hash, str(save_path), save_path.name, file_size, category)
+                self.logger.log(f"SAVE | {uid} | {category}/{save_path.name} | {format_size(file_size)}")
                 yield event.plain_result(f"已保存到 {save_path}")
             except Exception as e:
                 yield event.plain_result(f"保存失败: {e}")
             return
 
-    # ---------- 指令：查看目录 ----------
+    # ---------- 指令：查看目录 (P0-1 修复) ----------
 
     @filter.regex(r"^/?ls(\s|$)|^查看(\s|$)")
     async def cmd_ls(self, event: AstrMessageEvent):
@@ -195,7 +347,14 @@ class NASPlugin(Star):
             return
 
         args = event.message_str.strip().split(maxsplit=1)
-        target = Path(args[1]).resolve() if len(args) > 1 and Path(args[1]).is_absolute() else self.root
+        if len(args) > 1:
+            p = Path(args[1])
+            if p.is_absolute():
+                target = p.resolve()
+            else:
+                target = (self.root / p).resolve()
+        else:
+            target = self.root
 
         if not self._safe_path(target):
             yield event.plain_result("路径不在允许范围内")
@@ -220,7 +379,7 @@ class NASPlugin(Star):
 
         yield event.plain_result("\n".join(lines))
 
-    # ---------- 指令：发送文件 ----------
+    # ---------- 指令：发送文件 (P2-12 使用索引) ----------
 
     @filter.regex(r"^/?get(\s|$)|^发送文件(\s|$)")
     async def cmd_get(self, event: AstrMessageEvent):
@@ -237,35 +396,35 @@ class NASPlugin(Star):
         # 支持 分类/文件名 格式
         if "/" in name:
             cat_part, file_part = name.split("/", 1)
-            search_dirs = [self.root / cat_part.strip()]
+            results = self.index.find_by_name(file_part.strip())
+            results = [r for r in results if r["category"] == cat_part.strip()]
         else:
-            search_dirs = [self.root / cat for cat in FileClassifier.get_all_categories()]
+            results = self.index.find_by_name(name)
+            if not results:
+                results = self.index.search(name)
 
-        found = []
-        for cat_dir in search_dirs:
-            if not cat_dir.exists():
-                continue
-            for f in cat_dir.rglob(name if "/" not in name else file_part.strip()):
-                if f.is_file():
-                    found.append(f)
-
-        if not found:
+        if not results:
             yield event.plain_result(f"未找到文件: {name}")
             return
-        if len(found) > 1:
-            locations = "\n".join(f"  [{f.parent.name}] {f.name}" for f in found[:5])
+        if len(results) > 1:
+            locations = "\n".join(f"  [{r['category']}] {r['name']}" for r in results[:5])
             yield event.plain_result(f"找到多个同名文件:\n{locations}\n用 /get 分类/文件名 指定")
             return
 
-        file = found[0]
-        if file.stat().st_size > self.max_size:
-            yield event.plain_result(f"文件过大: {format_size(file.stat().st_size)}")
+        file_info = results[0]
+        file_path = Path(file_info["path"])
+        if not file_path.exists():
+            self.index.remove(str(file_path))
+            yield event.plain_result("文件已被删除")
+            return
+        if file_info["size"] > self.max_size:
+            yield event.plain_result(f"文件过大: {format_size(file_info['size'])}")
             return
 
-        self._log(f"SEND | {event.get_sender_id()} | {file.relative_to(self.root)}")
-        yield event.chain_result([File(name=file.name, file=str(file))])
+        self.logger.log(f"SEND | {event.get_sender_id()} | {file_info['category']}/{file_info['name']}")
+        yield event.chain_result([File(name=file_info["name"], file=str(file_path))])
 
-    # ---------- 指令：搜索 ----------
+    # ---------- 指令：搜索 (P2-11 使用索引) ----------
 
     @filter.regex(r"^/?search(\s|$)|^搜索文件(\s|$)")
     async def cmd_search(self, event: AstrMessageEvent):
@@ -277,26 +436,19 @@ class NASPlugin(Star):
             yield event.plain_result("用法: /search 关键词")
             return
 
-        keyword = args[1].strip().lower()
-        results = []
-        for cat in FileClassifier.get_all_categories():
-            cat_dir = self.root / cat
-            if not cat_dir.exists():
-                continue
-            for f in cat_dir.rglob("*"):
-                if f.is_file() and keyword in f.name.lower():
-                    results.append((cat, f))
+        keyword = args[1].strip()
+        results = self.index.search(keyword)
 
         if not results:
             yield event.plain_result(f"未找到包含「{keyword}」的文件")
             return
 
         lines = [f"搜索结果 ({len(results)}个):\n"]
-        for cat, f in results[:20]:
-            lines.append(f"  [{cat}] {f.name} ({format_size(f.stat().st_size)})")
+        for r in results[:20]:
+            lines.append(f"  [{r['category']}] {r['name']} ({format_size(r['size'])})")
         yield event.plain_result("\n".join(lines))
 
-    # ---------- 指令：删除（二次确认） ----------
+    # ---------- 指令：删除（P0-5 带清理） ----------
 
     @filter.regex(r"^/?rm(\s|$)|^删除文件(\s|$)")
     async def cmd_rm(self, event: AstrMessageEvent):
@@ -311,40 +463,42 @@ class NASPlugin(Star):
             return
 
         name = args[1].strip()
+        self._cleanup_pending()
 
-        # 搜索文件
-        found = []
-        for cat in FileClassifier.get_all_categories():
-            cat_dir = self.root / cat
-            if not cat_dir.exists():
-                continue
-            for f in cat_dir.rglob(name):
-                if f.is_file():
-                    found.append(f)
+        # 用索引查找
+        results = self.index.find_by_name(name)
+        if not results:
+            results = self.index.search(name)
 
-        if not found:
+        if not results:
             yield event.plain_result(f"未找到文件: {name}")
             return
-        if len(found) > 1:
-            locations = "\n".join(f"  [{f.parent.name}] {f.name}" for f in found[:5])
+        if len(results) > 1:
+            locations = "\n".join(f"  [{r['category']}] {r['name']}" for r in results[:5])
             yield event.plain_result(f"找到多个文件:\n{locations}\n请指定完整路径")
             return
 
-        target = found[0]
+        info = results[0]
+        target = Path(info["path"])
+        if not target.exists():
+            self.index.remove(str(target))
+            yield event.plain_result("文件已被删除")
+            return
+
         sig = (target.stat().st_size, target.stat().st_mtime_ns)
-        self._delete_waiting[uid] = {
+        self._delete_pending[uid] = {
             "path": target, "name": target.name,
-            "sig": sig, "time": time.time()
+            "sig": sig, "time": time.time(), "category": info["category"]
         }
         yield event.plain_result(
-            f"确认删除 [{target.parent.name}] {target.name} ({format_size(target.stat().st_size)})？\n"
+            f"确认删除 [{info['category']}] {target.name} ({format_size(info['size'])})？\n"
             f"{self.confirm_ttl}秒内回复「确认删除」执行，「取消」放弃"
         )
 
     @filter.regex(r"^确认删除$")
     async def cmd_confirm_delete(self, event: AstrMessageEvent):
         uid = event.get_sender_id()
-        waiting = self._delete_waiting.pop(uid, None)
+        waiting = self._delete_pending.pop(uid, None)
         if not waiting:
             yield event.plain_result("没有待确认的删除")
             return
@@ -355,6 +509,7 @@ class NASPlugin(Star):
 
         target: Path = waiting["path"]
         if not target.exists():
+            self.index.remove(str(target))
             yield event.plain_result("文件已不存在")
             return
         if (target.stat().st_size, target.stat().st_mtime_ns) != waiting["sig"]:
@@ -362,12 +517,13 @@ class NASPlugin(Star):
             return
 
         target.unlink()
-        self._log(f"DELETE | {uid} | {target.relative_to(self.root)}")
+        self.index.remove(str(target))
+        self.logger.log(f"DELETE | {uid} | {waiting['category']}/{waiting['name']}")
         yield event.plain_result(f"已删除: {waiting['name']}")
 
     @filter.regex(r"^取消$")
     async def cmd_cancel(self, event: AstrMessageEvent):
-        if self._delete_waiting.pop(event.get_sender_id(), None):
+        if self._delete_pending.pop(event.get_sender_id(), None):
             yield event.plain_result("已取消删除")
 
     # ---------- 指令：移动 ----------
@@ -396,13 +552,17 @@ class NASPlugin(Star):
             dst = dst / src.name
 
         try:
+            old_hash = file_hash(str(src))
             shutil.move(str(src), str(dst))
-            self._log(f"MOVE | {event.get_sender_id()} | {src.name} -> {dst}")
+            self.index.remove(str(src))
+            new_cat = FileClassifier.get_category(dst.name)
+            self.index.add(old_hash, str(dst), dst.name, dst.stat().st_size, new_cat)
+            self.logger.log(f"MOVE | {event.get_sender_id()} | {src.name} -> {dst}")
             yield event.plain_result(f"已移动到 {dst}")
         except Exception as e:
             yield event.plain_result(f"移动失败: {e}")
 
-    # ---------- 指令：磁盘空间 ----------
+    # ---------- 指令：磁盘空间 (P0-4 使用索引缓存) ----------
 
     @filter.regex(r"^/?du(\s|$)|^空间$")
     async def cmd_du(self, event: AstrMessageEvent):
@@ -410,22 +570,7 @@ class NASPlugin(Star):
             return
 
         usage = shutil.disk_usage(self.root)
-        total_files = 0
-        total_size = 0
-        cat_stats = {}
-
-        for cat in FileClassifier.get_all_categories():
-            cat_dir = self.root / cat
-            if not cat_dir.exists():
-                continue
-            count, size = 0, 0
-            for f in cat_dir.rglob("*"):
-                if f.is_file():
-                    count += 1
-                    size += f.stat().st_size
-            cat_stats[cat] = (count, size)
-            total_files += count
-            total_size += size
+        stats = self.index.get_stats()
 
         lines = [
             f"磁盘空间",
@@ -433,9 +578,9 @@ class NASPlugin(Star):
             f"  已用: {format_size(usage.used)}",
             f"  剩余: {format_size(usage.free)}",
             f"",
-            f"文件统计 (共 {total_files} 个, {format_size(total_size)})",
+            f"文件统计 (共 {stats['total_count']} 个, {format_size(stats['total_size'])})",
         ]
-        for cat, (count, size) in cat_stats.items():
+        for cat, (count, size) in stats["categories"].items():
             if count > 0:
                 lines.append(f"  {cat}: {count}个 ({format_size(size)})")
 
@@ -446,7 +591,7 @@ class NASPlugin(Star):
     @filter.regex(r"^/?nas(\s|$)")
     async def cmd_help(self, event: AstrMessageEvent):
         yield event.plain_result(
-            "NAS 助手指令\n\n"
+            "NAS 助手 v2.0\n\n"
             "自动功能: 私聊发文件自动分类保存\n\n"
             "/ls [路径]      - 查看目录\n"
             "/get 文件名     - 发送文件\n"
