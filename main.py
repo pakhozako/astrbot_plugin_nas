@@ -190,8 +190,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：查看目录 ----------
 
-    @filter.command("ls")
-    @filter.command("查看")
+    @filter.command("ls", alias={"查看"})
     async def cmd_ls(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
             return
@@ -224,8 +223,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：发送文件 ----------
 
-    @filter.command("get")
-    @filter.command("发送文件")
+    @filter.command("get", alias={"发送文件"})
     async def cmd_get(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
             return
@@ -270,8 +268,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：搜索 ----------
 
-    @filter.command("search")
-    @filter.command("搜索文件")
+    @filter.command("search", alias={"搜索文件"})
     async def cmd_search(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
             return
@@ -302,8 +299,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：删除（二次确认） ----------
 
-    @filter.command("rm")
-    @filter.command("删除文件")
+    @filter.command("rm", alias={"删除文件"})
     async def cmd_rm(self, event: AstrMessageEvent):
         uid = event.get_sender_id()
         if not self._is_admin(uid):
@@ -377,8 +373,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：移动 ----------
 
-    @filter.command("mv")
-    @filter.command("移动文件")
+    @filter.command("mv", alias={"移动文件"})
     async def cmd_mv(self, event: AstrMessageEvent):
         if not self._is_admin(event.get_sender_id()):
             yield event.plain_result("仅管理员可移动文件")
@@ -410,8 +405,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：磁盘空间 ----------
 
-    @filter.command("du")
-    @filter.command("空间")
+    @filter.command("du", alias={"空间"})
     async def cmd_du(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
             return
@@ -450,8 +444,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：帮助 ----------
 
-    @filter.command("nas")
-    @filter.command("nas帮助")
+    @filter.command("nas", alias={"nas帮助"})
     async def cmd_help(self, event: AstrMessageEvent):
         yield event.plain_result(
             "NAS 助手指令\n\n"
