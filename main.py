@@ -81,6 +81,8 @@ class FileIndex:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS files (
                     hash TEXT PRIMARY KEY,
@@ -115,19 +117,14 @@ class FileIndex:
             conn.commit()
 
     def move(self, old_path: str, h: str, new_path: str, name: str, size: int, mtime: int, category: str):
-        """事务化移动：先更新再提交，失败则回滚"""
+        """事务化移动：UPDATE 替代 DELETE+INSERT"""
         with self._lock, sqlite3.connect(self.db_path) as conn:
-            conn.execute("BEGIN")
-            try:
-                conn.execute("DELETE FROM files WHERE path=?", (old_path,))
-                conn.execute(
-                    "INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (h, new_path, name, size, mtime, category, int(time.time()))
-                )
-                conn.execute("COMMIT")
-            except Exception:
-                conn.execute("ROLLBACK")
-                raise
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                "UPDATE files SET path=?, hash=?, name=?, size=?, mtime=?, category=?, created_at=? WHERE path=?",
+                (new_path, h, name, size, mtime, category, int(time.time()), old_path)
+            )
+            conn.commit()
 
     def search(self, keyword: str) -> list:
         with self._lock, sqlite3.connect(self.db_path) as conn:
@@ -246,6 +243,7 @@ class NASPlugin(Star):
         self.confirm_ttl = int(cfg.get("delete_confirm_ttl", 120))
         self.log_enabled = bool(cfg.get("log_enabled", True))
         self._delete_pending = {}
+        self._rebuilding = False
 
         self._init_dirs()
         self.index = FileIndex(str(self.root / "files.db"))
@@ -281,8 +279,15 @@ class NASPlugin(Star):
 
     @filter.on_astrbot_loaded()
     async def on_loaded(self, event):
-        count = await asyncio.to_thread(self.index.rebuild_from_fs, self.root)
-        logger.info(f"[NAS] 索引重建完成: {count} 个文件")
+        if self._rebuilding:
+            logger.info("[NAS] 重建已在进行中，跳过")
+            return
+        self._rebuilding = True
+        try:
+            count = await asyncio.to_thread(self.index.rebuild_from_fs, self.root)
+            logger.info(f"[NAS] 索引重建完成: {count} 个文件")
+        finally:
+            self._rebuilding = False
 
     # ---------- 核心：自动接收 ----------
 
@@ -640,6 +645,19 @@ class NASPlugin(Star):
             "/rm 文件名      - 删除文件 (需确认)\n"
             "/mv 源 目标     - 移动/重命名\n"
             "/du             - 磁盘空间\n"
+            "/vacuum         - 数据库整理 (管理员)\n"
             "/nas            - 此帮助\n\n"
             "分类: Images / Videos / Music / Documents / Archives / Others"
         )
+
+
+    # ---------- 指令：数据库整理 ----------
+
+    @filter.regex(r"^/?vacuum$")
+    async def cmd_vacuum(self, event: AstrMessageEvent):
+        if not self._is_admin(event.get_sender_id()):
+            yield event.plain_result("仅管理员可执行")
+            return
+        yield event.plain_result("正在整理数据库...")
+        await asyncio.to_thread(self.index.vacuum)
+        yield event.plain_result("数据库整理完成 (VACUUM + ANALYZE)")
