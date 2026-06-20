@@ -118,7 +118,6 @@ class FileIndex:
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON files(path)")
                     conn.commit()
-                return  # 跳过后续正常初始化
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -134,6 +133,10 @@ class FileIndex:
                     created_at INTEGER NOT NULL
                 )
             """)
+            # Schema 迁移：补缺失列
+            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
+            if "mtime" not in existing_cols:
+                conn.execute("ALTER TABLE files ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON files(path)")
