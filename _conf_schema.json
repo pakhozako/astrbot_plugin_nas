@@ -2,14 +2,14 @@
   "save_root": {
     "type": "string",
     "description": "文件保存根目录",
-    "hint": "支持本地路径或 NAS 挂载路径，如 D:\\NAS 或 \\\\192.168.1.100\\share",
-    "default": "D:\\NAS"
+    "hint": "支持本地路径或 NAS 挂载路径，留空则使用 AstrBot 默认数据目录",
+    "default": ""
   },
   "allowed_users": {
     "type": "list",
     "description": "允许使用的 QQ 列表",
     "hint": "留空则所有用户可用",
-    "default": ["2413474391"]
+    "default": []
   },
   "admin_users": {
     "type": "list",
@@ -30,16 +30,9 @@
     "hint": "关闭后只响应指令，不自动保存文件",
     "default": true
   },
-  "auto_preview": {
-    "type": "bool",
-    "description": "自动预览文件",
-    "hint": "收到图片/文本时自动回复预览",
-    "default": true
-  },
   "dedup_enabled": {
     "type": "bool",
-    "description": "启用文件去重",
-    "hint": "相同文件不重复保存",
+    "description": "启用文件去重 (MD5)",
     "default": true
   },
   "delete_confirm_ttl": {
@@ -53,5 +46,11 @@
     "type": "bool",
     "description": "启用操作日志",
     "default": true
+  },
+  "categories": {
+    "type": "text",
+    "description": "自定义分类规则 (JSON)",
+    "hint": "留空使用默认分类。格式: {\"分类名\": [\"扩展名1\",\"扩展名2\"]}",
+    "default": ""
   }
 }

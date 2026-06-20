@@ -8,14 +8,11 @@ import shutil
 import time
 import hashlib
 import sqlite3
-import threading
 from pathlib import Path
-from datetime import datetime
-from collections import defaultdict
 
-from astrbot.api.message_components import *
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api import AstrBotConfig
+from astrbot.api.message_components import *
 from astrbot.api.star import Context, Star, register
 
 
@@ -156,47 +153,6 @@ class FileIndex:
             conn.commit()
 
 
-# ==================== 异步日志 ====================
-
-class AsyncLogger:
-    """异步日志写入，避免阻塞主线程"""
-
-    def __init__(self, log_dir: Path, enabled: bool = True):
-        self.log_dir = log_dir
-        self.enabled = enabled
-        self._queue = []
-        self._lock = threading.Lock()
-        self._flush_interval = 5
-        self._last_flush = time.time()
-        if enabled:
-            log_dir.mkdir(parents=True, exist_ok=True)
-
-    def log(self, msg: str):
-        if not self.enabled:
-            return
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with self._lock:
-            self._queue.append(f"[{ts}] {msg}\n")
-            if time.time() - self._last_flush > self._flush_interval:
-                self._flush()
-
-    def _flush(self):
-        if not self._queue:
-            return
-        try:
-            log_file = self.log_dir / "nas.log"
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.writelines(self._queue)
-            self._queue.clear()
-            self._last_flush = time.time()
-        except Exception:
-            pass
-
-    def flush(self):
-        with self._lock:
-            self._flush()
-
-
 # ==================== 核心插件 ====================
 
 @register("NAS 助手", "pakhozako", "私聊文件自动归档到本地磁盘/NAS", "v2.0.0")
@@ -218,7 +174,6 @@ class NASPlugin(Star):
 
         self._init_dirs()
         self._init_index()
-        self._init_logger()
         print(f"[NAS] 根目录: {self.root} | 自动保存: {self.auto_save}")
 
     def _init_dirs(self):
@@ -229,9 +184,6 @@ class NASPlugin(Star):
         db_path = str(self.root / "files.db")
         self.index = FileIndex(db_path)
         self.index.scan_and_build(self.root)
-
-    def _init_logger(self):
-        self.logger = AsyncLogger(self.root / "logs", self.log_enabled)
 
     # ---------- 安全工具 ----------
 
@@ -333,7 +285,7 @@ class NASPlugin(Star):
             try:
                 shutil.copy2(source, save_path)
                 self.index.add(src_hash, str(save_path), save_path.name, file_size, category)
-                self.logger.log(f"SAVE | {uid} | {category}/{save_path.name} | {format_size(file_size)}")
+                logger.info(f"SAVE | {uid} | {category}/{save_path.name} | {format_size(file_size)}")
                 yield event.plain_result(f"已保存到 {save_path}")
             except Exception as e:
                 yield event.plain_result(f"保存失败: {e}")
@@ -421,7 +373,7 @@ class NASPlugin(Star):
             yield event.plain_result(f"文件过大: {format_size(file_info['size'])}")
             return
 
-        self.logger.log(f"SEND | {event.get_sender_id()} | {file_info['category']}/{file_info['name']}")
+        logger.info(f"SEND | {event.get_sender_id()} | {file_info['category']}/{file_info['name']}")
         yield event.chain_result([File(name=file_info["name"], file=str(file_path))])
 
     # ---------- 指令：搜索 (P2-11 使用索引) ----------
@@ -518,7 +470,7 @@ class NASPlugin(Star):
 
         target.unlink()
         self.index.remove(str(target))
-        self.logger.log(f"DELETE | {uid} | {waiting['category']}/{waiting['name']}")
+        logger.info(f"DELETE | {uid} | {waiting['category']}/{waiting['name']}")
         yield event.plain_result(f"已删除: {waiting['name']}")
 
     @filter.regex(r"^取消$")
@@ -557,7 +509,7 @@ class NASPlugin(Star):
             self.index.remove(str(src))
             new_cat = FileClassifier.get_category(dst.name)
             self.index.add(old_hash, str(dst), dst.name, dst.stat().st_size, new_cat)
-            self.logger.log(f"MOVE | {event.get_sender_id()} | {src.name} -> {dst}")
+            logger.info(f"MOVE | {event.get_sender_id()} | {src.name} -> {dst}")
             yield event.plain_result(f"已移动到 {dst}")
         except Exception as e:
             yield event.plain_result(f"移动失败: {e}")

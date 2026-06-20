@@ -8,8 +8,4 @@ author: "pakhozako"
 repo: "https://github.com/pakhozako/astrbot_plugin_nas"
 support_platforms:
   - aiocqhttp
-  - telegram
-  - wecom
-  - lark
-  - discord
 astrbot_version: ">=4.16"
