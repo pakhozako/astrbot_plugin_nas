@@ -12,9 +12,11 @@ from pathlib import Path
 from datetime import datetime
 
 from astrbot.api import logger
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.message_components import File, Image, Video
-from astrbot.api.star import Star
+from astrbot.api.event import filter
+from astrbot.api.star import Context, Star
+from astrbot.core import AstrBotConfig
+from astrbot.core.message.components import File, Image, Video
+from astrbot.core.platform import AstrMessageEvent
 
 
 # ==================== 文件分类器 ====================
@@ -67,7 +69,7 @@ def format_size(size: int) -> str:
 class NASPlugin(Star):
     """NAS 助手插件"""
 
-    def __init__(self, context, config=None):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         cfg = config or {}
         self.root = Path(cfg.get("save_root", r"D:\NAS")).resolve()
