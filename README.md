@@ -1,5 +1,7 @@
 # NAS 助手 — AstrBot 私聊文件自动归档插件
 
+![:name](https://count.getloli.com/@astrbot_plugin_nas?name=astrbot_plugin_nas&theme=minecraft&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
+
 > 一个基于 SQLite 索引的 NAS 文件管理插件，支持自动分类、秒级搜索、灾难恢复和大规模文件管理。
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
