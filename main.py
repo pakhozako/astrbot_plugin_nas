@@ -319,7 +319,7 @@ class NASPlugin(Star):
     # ---------- 启动时重建索引（指纹优先） ----------
 
     @filter.on_astrbot_loaded()
-    async def on_loaded(self, event):
+    async def on_loaded(self):
         if self._rebuilding:
             logger.info("[NAS] 重建已在进行中，跳过")
             return
