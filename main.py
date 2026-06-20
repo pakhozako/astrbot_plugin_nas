@@ -189,7 +189,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：查看目录 ----------
 
-    @filter.command("ls", alias={"查看"})
+    @filter.regex(r"^/?ls(\s|$)|^查看(\s|$)")
     async def cmd_ls(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
             return
@@ -222,7 +222,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：发送文件 ----------
 
-    @filter.command("get", alias={"发送文件"})
+    @filter.regex(r"^/?get(\s|$)|^发送文件(\s|$)")
     async def cmd_get(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
             return
@@ -267,7 +267,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：搜索 ----------
 
-    @filter.command("search", alias={"搜索文件"})
+    @filter.regex(r"^/?search(\s|$)|^搜索文件(\s|$)")
     async def cmd_search(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
             return
@@ -298,7 +298,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：删除（二次确认） ----------
 
-    @filter.command("rm", alias={"删除文件"})
+    @filter.regex(r"^/?rm(\s|$)|^删除文件(\s|$)")
     async def cmd_rm(self, event: AstrMessageEvent):
         uid = event.get_sender_id()
         if not self._is_admin(uid):
@@ -341,7 +341,7 @@ class NASPlugin(Star):
             f"{self.confirm_ttl}秒内回复「确认删除」执行，「取消」放弃"
         )
 
-    @filter.command("确认删除")
+    @filter.regex(r"^确认删除$")
     async def cmd_confirm_delete(self, event: AstrMessageEvent):
         uid = event.get_sender_id()
         waiting = self._delete_waiting.pop(uid, None)
@@ -365,14 +365,14 @@ class NASPlugin(Star):
         self._log(f"DELETE | {uid} | {target.relative_to(self.root)}")
         yield event.plain_result(f"已删除: {waiting['name']}")
 
-    @filter.command("取消")
+    @filter.regex(r"^取消$")
     async def cmd_cancel(self, event: AstrMessageEvent):
         if self._delete_waiting.pop(event.get_sender_id(), None):
             yield event.plain_result("已取消删除")
 
     # ---------- 指令：移动 ----------
 
-    @filter.command("mv", alias={"移动文件"})
+    @filter.regex(r"^/?mv(\s|$)|^移动文件(\s|$)")
     async def cmd_mv(self, event: AstrMessageEvent):
         if not self._is_admin(event.get_sender_id()):
             yield event.plain_result("仅管理员可移动文件")
@@ -404,7 +404,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：磁盘空间 ----------
 
-    @filter.command("du", alias={"空间"})
+    @filter.regex(r"^/?du(\s|$)|^空间$")
     async def cmd_du(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
             return
@@ -443,7 +443,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：帮助 ----------
 
-    @filter.command("nas")
+    @filter.regex(r"^/?nas(\s|$)")
     async def cmd_help(self, event: AstrMessageEvent):
         yield event.plain_result(
             "NAS 助手指令\n\n"
