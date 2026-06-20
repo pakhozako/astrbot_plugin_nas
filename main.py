@@ -11,12 +11,10 @@ import hashlib
 from pathlib import Path
 from datetime import datetime
 
-from astrbot.api import logger
-from astrbot.api.event import filter
-from astrbot.api.star import Context, Star
-from astrbot.core import AstrBotConfig
-from astrbot.core.message.components import File, Image, Video
-from astrbot.core.platform import AstrMessageEvent
+from astrbot.api.message_components import *
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api import AstrBotConfig
+from astrbot.api.star import Context, Star, register
 
 
 # ==================== 文件分类器 ====================
@@ -66,6 +64,7 @@ def format_size(size: int) -> str:
 
 # ==================== 核心插件 ====================
 
+@register("NAS 助手", "pakhozako", "私聊文件自动归档到本地磁盘/NAS", "1.0.0")
 class NASPlugin(Star):
     """NAS 助手插件"""
 
@@ -84,7 +83,7 @@ class NASPlugin(Star):
         self._delete_waiting = {}
 
         self._init_dirs()
-        logger.info(f"[NAS] 根目录: {self.root} | 自动保存: {self.auto_save}")
+        print(f"[NAS] 根目录: {self.root} | 自动保存: {self.auto_save}")
 
     def _init_dirs(self):
         for cat in FileClassifier.get_all_categories():
@@ -444,7 +443,7 @@ class NASPlugin(Star):
 
     # ---------- 指令：帮助 ----------
 
-    @filter.command("nas", alias={"nas帮助"})
+    @filter.command("nas")
     async def cmd_help(self, event: AstrMessageEvent):
         yield event.plain_result(
             "NAS 助手指令\n\n"
