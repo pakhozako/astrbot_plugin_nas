@@ -9,7 +9,7 @@
     "type": "list",
     "description": "允许使用的 QQ 列表",
     "hint": "留空则所有用户可用",
-    "default": []
+    "default": ["2413474391"]
   },
   "admin_users": {
     "type": "list",

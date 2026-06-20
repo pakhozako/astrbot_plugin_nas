@@ -102,7 +102,7 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 - 重要：删除操作会要求二次确认，但仍请三思。
 - 默认根目录为 `D:\NAS`，可自行修改配置。
 - Docker 用户请提前挂载好目标目录。
-- 本插件仅供学习交流使用。
+- 本插件仅供学习交流使用，如有需要可 QQ 联系：2413474391。
 
 ## 📝 更新日志
 
