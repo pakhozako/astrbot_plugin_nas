@@ -80,6 +80,46 @@ class FileIndex:
         self._init_db()
 
     def _init_db(self):
+        """初始化数据库，损坏时自动备份并重建"""
+        db_path = Path(self.db_path)
+        if db_path.exists() and db_path.stat().st_size > 0:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute("PRAGMA integrity_check")
+            except Exception:
+                # 数据库损坏，备份并重建
+                import shutil as _shutil
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                backup = str(db_path) + f".broken.{ts}"
+                try:
+                    _shutil.copy2(self.db_path, backup)
+                except Exception:
+                    pass
+                try:
+                    os.remove(self.db_path)
+                except Exception:
+                    pass
+                # 重新创建
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS files (
+                            hash TEXT PRIMARY KEY,
+                            path TEXT NOT NULL,
+                            name TEXT NOT NULL,
+                            size INTEGER NOT NULL,
+                            mtime INTEGER NOT NULL,
+                            category TEXT NOT NULL,
+                            created_at INTEGER NOT NULL
+                        )
+                    """)
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON files(path)")
+                    conn.commit()
+                return  # 跳过后续正常初始化
+
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
@@ -96,6 +136,7 @@ class FileIndex:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON files(path)")
             conn.commit()
 
     def has_hash(self, h: str) -> str | None:
@@ -286,6 +327,8 @@ class NASPlugin(Star):
         try:
             count = await asyncio.to_thread(self.index.rebuild_from_fs, self.root)
             logger.info(f"[NAS] 索引重建完成: {count} 个文件")
+        except Exception as e:
+            logger.error(f"[NAS] 索引重建失败: {e}，将从空索引开始")
         finally:
             self._rebuilding = False
 
@@ -375,6 +418,9 @@ class NASPlugin(Star):
     async def cmd_ls(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
             return
+        if self._rebuilding:
+            yield event.plain_result("NAS索引重建中，请稍后再试")
+            return
 
         args = event.message_str.strip().split(maxsplit=1)
         if len(args) > 1:
@@ -411,6 +457,9 @@ class NASPlugin(Star):
     @filter.regex(r"^/?get(\s|$)|^发送文件(\s|$)")
     async def cmd_get(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
+            return
+        if self._rebuilding:
+            yield event.plain_result("NAS索引重建中，请稍后再试")
             return
 
         args = event.message_str.strip().split(maxsplit=1)
@@ -457,6 +506,9 @@ class NASPlugin(Star):
     @filter.regex(r"^/?search(\s|$)|^搜索文件(\s|$)")
     async def cmd_search(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
+            return
+        if self._rebuilding:
+            yield event.plain_result("NAS索引重建中，请稍后再试")
             return
 
         args = event.message_str.strip().split(maxsplit=1)
@@ -613,6 +665,9 @@ class NASPlugin(Star):
     @filter.regex(r"^/?du(\s|$)|^空间$")
     async def cmd_du(self, event: AstrMessageEvent):
         if not self._is_allowed(event.get_sender_id()):
+            return
+        if self._rebuilding:
+            yield event.plain_result("NAS索引重建中，请稍后再试")
             return
 
         usage = shutil.disk_usage(self.root)
