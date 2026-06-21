@@ -472,6 +472,24 @@ class NASPlugin(Star):
 
         name = args[1].strip()
 
+        # 支持绝对路径直接发送
+        if os.path.isabs(name):
+            file_path = Path(name).resolve()
+            if not file_path.exists():
+                yield event.plain_result(f"文件不存在: {name}")
+                return
+            if file_path.is_dir():
+                yield event.plain_result(f"是目录不是文件: {name}")
+                return
+            file_size = file_path.stat().st_size
+            if file_size > self.max_size:
+                yield event.plain_result(f"文件过大: {format_size(file_size)}")
+                return
+            logger.info(f"SEND | {event.get_sender_id()} | {file_path}")
+            yield event.chain_result([File(name=file_path.name, file=str(file_path))])
+            return
+
+        # 按文件名搜索
         if "/" in name:
             cat_part, file_part = name.split("/", 1)
             results = await asyncio.to_thread(self.index.find_by_name, file_part.strip())
