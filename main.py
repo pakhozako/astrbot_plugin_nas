@@ -7,9 +7,6 @@ import os
 import shutil
 import time
 import asyncio
-import hashlib
-import sqlite3
-import threading
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -17,260 +14,9 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.message_components import *
 from astrbot.api.star import Context, Star, register
 
+from .utils import file_hash, file_fingerprint, format_size, FileClassifier
+from .index import FileIndex
 
-# ==================== 文件分类器 ====================
-
-class FileClassifier:
-    CATEGORIES = {
-        "Images":    {"jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico", "tiff", "heic", "heif"},
-        "Videos":    {"mp4", "mkv", "avi", "mov", "flv", "wmv", "webm", "ts", "m4v"},
-        "Music":     {"mp3", "flac", "wav", "aac", "ogg", "wma", "m4a", "opus"},
-        "Documents": {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "json", "xml", "yaml", "yml"},
-        "Archives":  {"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst"},
-    }
-
-    @classmethod
-    def get_category(cls, filename: str) -> str:
-        ext = Path(filename).suffix.lower().lstrip(".")
-        for category, extensions in cls.CATEGORIES.items():
-            if ext in extensions:
-                return category
-        return "Others"
-
-    @classmethod
-    def get_all_categories(cls) -> list:
-        return list(cls.CATEGORIES.keys()) + ["Others"]
-
-
-# ==================== 工具函数 ====================
-
-def file_hash(path: str) -> str:
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def file_fingerprint(path: str) -> tuple:
-    """快速指纹：(size, int(mtime))"""
-    st = os.stat(path)
-    return (st.st_size, int(st.st_mtime))
-
-
-def format_size(size: int) -> str:
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if size < 1024:
-            return f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}PB"
-
-
-# ==================== SQLite 索引（全部同步，外层用 asyncio.to_thread 包装） ====================
-
-class FileIndex:
-    """
-    文件索引 = 缓存层。
-    文件系统是真相源，SQLite 可随时从文件系统重建。
-    """
-
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self._lock = threading.Lock()
-        self._init_db()
-
-    def _init_db(self):
-        """初始化数据库，损坏时自动备份并重建"""
-        db_path = Path(self.db_path)
-        if db_path.exists() and db_path.stat().st_size > 0:
-            try:
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.execute("PRAGMA integrity_check")
-            except Exception:
-                # 数据库损坏，备份并重建
-                import shutil as _shutil
-                ts = time.strftime("%Y%m%d_%H%M%S")
-                backup = str(db_path) + f".broken.{ts}"
-                try:
-                    _shutil.copy2(self.db_path, backup)
-                except Exception:
-                    pass
-                try:
-                    os.remove(self.db_path)
-                except Exception:
-                    pass
-                # 重新创建
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.execute("PRAGMA journal_mode=WAL")
-                    conn.execute("PRAGMA synchronous=NORMAL")
-                    conn.execute("""
-                        CREATE TABLE IF NOT EXISTS files (
-                            hash TEXT PRIMARY KEY,
-                            path TEXT NOT NULL,
-                            name TEXT NOT NULL,
-                            size INTEGER NOT NULL,
-                            mtime INTEGER NOT NULL,
-                            category TEXT NOT NULL,
-                            created_at INTEGER NOT NULL
-                        )
-                    """)
-                    conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
-                    conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
-                    conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON files(path)")
-                    conn.commit()
-
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS files (
-                    hash TEXT PRIMARY KEY,
-                    path TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    size INTEGER NOT NULL,
-                    mtime INTEGER NOT NULL,
-                    category TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                )
-            """)
-            # Schema 迁移：补缺失列
-            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
-            if "mtime" not in existing_cols:
-                conn.execute("ALTER TABLE files ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON files(path)")
-            conn.commit()
-
-    def has_hash(self, h: str) -> str | None:
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            row = conn.execute("SELECT path FROM files WHERE hash=?", (h,)).fetchone()
-            return row[0] if row else None
-
-    def add(self, h: str, path: str, name: str, size: int, mtime: int, category: str):
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (h, path, name, size, mtime, category, int(time.time()))
-            )
-            conn.commit()
-
-    def remove(self, path: str):
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM files WHERE path=?", (path,))
-            conn.commit()
-
-    def move(self, old_path: str, h: str, new_path: str, name: str, size: int, mtime: int, category: str):
-        """事务化移动：UPDATE 替代 DELETE+INSERT"""
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(
-                "UPDATE files SET path=?, hash=?, name=?, size=?, mtime=?, category=?, created_at=? WHERE path=?",
-                (new_path, h, name, size, mtime, category, int(time.time()), old_path)
-            )
-            conn.commit()
-
-    def search(self, keyword: str) -> list:
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT path, name, size, category FROM files WHERE name LIKE ?",
-                (f"%{keyword}%",)
-            ).fetchall()
-            return [{"path": r[0], "name": r[1], "size": r[2], "category": r[3]} for r in rows]
-
-    def find_by_name(self, name: str) -> list:
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT path, name, size, category FROM files WHERE name=?",
-                (name,)
-            ).fetchall()
-            return [{"path": r[0], "name": r[1], "size": r[2], "category": r[3]} for r in rows]
-
-    def get_stats(self) -> dict:
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute("SELECT category, COUNT(*), SUM(size) FROM files GROUP BY category").fetchall()
-            total_count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-            total_size = conn.execute("SELECT COALESCE(SUM(size),0) FROM files").fetchone()[0]
-            stats = {}
-            for cat, count, size in rows:
-                stats[cat] = (count, size or 0)
-            return {"categories": stats, "total_count": total_count, "total_size": total_size}
-
-    def get_all_entries(self) -> dict:
-        """返回 {path: (hash, size, mtime)} 用于校验"""
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute("SELECT path, hash, size, mtime FROM files").fetchall()
-            return {r[0]: (r[1], r[2], r[3]) for r in rows}
-
-    def rebuild_from_fs(self, root: Path):
-        """
-        指纹优先重建：
-        1. 扫描文件系统，收集 (path, size, mtime)
-        2. 对比 SQLite 中的记录
-        3. 未变化 → 跳过
-        4. 新增/变化 → 算 MD5，更新索引
-        5. SQLite 中存在但文件系统不存在 → 删除记录
-        """
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            # 加载现有索引
-            existing = {}
-            for row in conn.execute("SELECT path, hash, size, mtime FROM files").fetchall():
-                existing[row[0]] = (row[1], row[2], row[3])
-
-            # 扫描文件系统
-            fs_entries = {}  # {path: (size, mtime)}
-            for cat in FileClassifier.get_all_categories():
-                cat_dir = root / cat
-                if not cat_dir.exists():
-                    continue
-                for f in cat_dir.iterdir():
-                    if not f.is_file() or f.is_symlink():
-                        continue
-                    try:
-                        st = f.stat()
-                        fs_entries[str(f)] = (st.st_size, int(st.st_mtime), cat, f.name)
-                    except OSError:
-                        continue
-
-            # 清空重建
-            conn.execute("DELETE FROM files")
-            now = int(time.time())
-
-            for path, (size, mtime, cat, name) in fs_entries.items():
-                old = existing.get(path)
-                if old and old[1] == size and old[2] == mtime:
-                    # 指纹未变，复用旧 hash
-                    h = old[0]
-                else:
-                    # 新增或变化，算 MD5
-                    try:
-                        h = file_hash(path)
-                    except OSError:
-                        continue
-
-                conn.execute(
-                    "INSERT OR IGNORE INTO files VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (h, path, name, size, mtime, cat, now)
-                )
-
-            conn.commit()
-            return len(fs_entries)
-
-    def vacuum(self):
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            conn.execute("VACUUM")
-            conn.execute("ANALYZE")
-            conn.commit()
-
-    def remove_stale(self, path: str):
-        """移除指向不存在文件的记录"""
-        if not os.path.exists(path):
-            self.remove(path)
-            return True
-        return False
-
-
-# ==================== 核心插件 ====================
 
 @register("NAS 助手", "pakhozako", "私聊文件自动归档到本地磁盘/NAS", "v2.1.0")
 class NASPlugin(Star):
@@ -319,12 +65,11 @@ class NASPlugin(Star):
         for uid in expired:
             self._delete_pending.pop(uid, None)
 
-    # ---------- 启动时重建索引（指纹优先） ----------
+    # ---------- 启动时重建索引 ----------
 
     @filter.on_astrbot_loaded()
     async def on_loaded(self):
         if self._rebuilding:
-            logger.info("[NAS] 重建已在进行中，跳过")
             return
         self._rebuilding = True
         try:
@@ -335,7 +80,7 @@ class NASPlugin(Star):
         finally:
             self._rebuilding = False
 
-    # ---------- 核心：自动接收 ----------
+    # ---------- 自动接收 ----------
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=100)
     async def on_file_received(self, event: AstrMessageEvent):
@@ -353,13 +98,13 @@ class NASPlugin(Star):
             if hasattr(comp, 'get_file'):
                 try:
                     source = await comp.get_file()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[NAS] get_file 失败: {e}")
             elif hasattr(comp, 'convert_to_file_path'):
                 try:
                     source = await comp.convert_to_file_path()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[NAS] convert_to_file_path 失败: {e}")
 
             if not source or not os.path.exists(source):
                 continue
@@ -370,7 +115,8 @@ class NASPlugin(Star):
 
             try:
                 file_size = os.path.getsize(source)
-            except OSError:
+            except OSError as e:
+                logger.warning(f"[NAS] 获取文件大小失败: {e}")
                 continue
 
             if file_size > self.max_size:
@@ -381,7 +127,6 @@ class NASPlugin(Star):
             if not name:
                 name = f"file_{int(time.time())}"
 
-            # 去重
             if self.dedup:
                 src_hash = file_hash(source)
                 existing = await asyncio.to_thread(self.index.has_hash, src_hash)
@@ -409,13 +154,14 @@ class NASPlugin(Star):
                     self.index.add, src_hash, str(save_path), save_path.name,
                     fp[0], fp[1], category
                 )
-                logger.info(f"SAVE | {uid} | {category}/{save_path.name} | {format_size(file_size)}")
+                logger.info(f"[NAS] SAVE | {uid} | {category}/{save_path.name} | {format_size(file_size)}")
                 yield event.plain_result(f"已保存到 {save_path}")
             except Exception as e:
+                logger.error(f"[NAS] 文件保存失败: {e}")
                 yield event.plain_result(f"保存失败: {e}")
             return
 
-    # ---------- 指令：查看目录 ----------
+    # ---------- ls ----------
 
     @filter.regex(r"^/?ls(\s|$)|^查看(\s|$)")
     async def cmd_ls(self, event: AstrMessageEvent):
@@ -455,7 +201,7 @@ class NASPlugin(Star):
 
         yield event.plain_result("\n".join(lines))
 
-    # ---------- 指令：发送文件 ----------
+    # ---------- get ----------
 
     @filter.regex(r"^/?get(\s|$)|^发送文件(\s|$)")
     async def cmd_get(self, event: AstrMessageEvent):
@@ -472,7 +218,7 @@ class NASPlugin(Star):
 
         name = args[1].strip()
 
-        # 支持绝对路径直接发送
+        # 绝对路径
         if os.path.isabs(name):
             file_path = Path(name).resolve()
             if not file_path.exists():
@@ -485,12 +231,12 @@ class NASPlugin(Star):
             if file_size > self.max_size:
                 yield event.plain_result(f"文件过大: {format_size(file_size)}")
                 return
-            logger.info(f"SEND | {event.get_sender_id()} | {file_path}")
+            logger.info(f"[NAS] SEND | {event.get_sender_id()} | {file_path}")
             yield event.chain_result([File(name=file_path.name, file=str(file_path))])
             yield event.plain_result(f"已发送: {file_path.name} ({format_size(file_size)})")
             return
 
-        # 按文件名搜索
+        # 按名称搜索
         if "/" in name:
             cat_part, file_part = name.split("/", 1)
             results = await asyncio.to_thread(self.index.find_by_name, file_part.strip())
@@ -511,7 +257,6 @@ class NASPlugin(Star):
         info = results[0]
         file_path = Path(info["path"])
 
-        # 文件系统是真相源：文件不存在则清理索引
         if not file_path.exists():
             await asyncio.to_thread(self.index.remove, str(file_path))
             yield event.plain_result("文件已被外部删除，已清理索引")
@@ -520,11 +265,11 @@ class NASPlugin(Star):
             yield event.plain_result(f"文件过大: {format_size(info['size'])}")
             return
 
-        logger.info(f"SEND | {event.get_sender_id()} | {info['category']}/{info['name']}")
+        logger.info(f"[NAS] SEND | {event.get_sender_id()} | {info['category']}/{info['name']}")
         yield event.chain_result([File(name=info["name"], file=str(file_path))])
         yield event.plain_result(f"已发送: {info['name']} ({format_size(info['size'])})")
 
-    # ---------- 指令：搜索 ----------
+    # ---------- search ----------
 
     @filter.regex(r"^/?search(\s|$)|^搜索文件(\s|$)")
     async def cmd_search(self, event: AstrMessageEvent):
@@ -542,7 +287,6 @@ class NASPlugin(Star):
         keyword = args[1].strip()
         results = await asyncio.to_thread(self.index.search, keyword)
 
-        # 懒清理：搜索结果中文件不存在的自动移除
         valid = []
         stale = []
         for r in results:
@@ -565,7 +309,7 @@ class NASPlugin(Star):
             lines.append(f"  [{r['category']}] {r['name']} ({format_size(r['size'])})")
         yield event.plain_result("\n".join(lines))
 
-    # ---------- 指令：删除 ----------
+    # ---------- rm ----------
 
     @filter.regex(r"^/?rm(\s|$)|^删除文件(\s|$)")
     async def cmd_rm(self, event: AstrMessageEvent):
@@ -597,7 +341,6 @@ class NASPlugin(Star):
         info = results[0]
         target = Path(info["path"])
 
-        # 文件系统校验
         if not target.exists():
             await asyncio.to_thread(self.index.remove, str(target))
             yield event.plain_result("文件已被外部删除，已清理索引")
@@ -636,7 +379,7 @@ class NASPlugin(Star):
 
         target.unlink()
         await asyncio.to_thread(self.index.remove, str(target))
-        logger.info(f"DELETE | {uid} | {waiting['category']}/{waiting['name']}")
+        logger.info(f"[NAS] DELETE | {uid} | {waiting['category']}/{waiting['name']}")
         yield event.plain_result(f"已删除: {waiting['name']}")
 
     @filter.regex(r"^取消$")
@@ -644,7 +387,7 @@ class NASPlugin(Star):
         if self._delete_pending.pop(event.get_sender_id(), None):
             yield event.plain_result("已取消删除")
 
-    # ---------- 指令：移动（事务化） ----------
+    # ---------- mv ----------
 
     @filter.regex(r"^/?mv(\s|$)|^移动文件(\s|$)")
     async def cmd_mv(self, event: AstrMessageEvent):
@@ -678,12 +421,13 @@ class NASPlugin(Star):
                 self.index.move, str(src), h, str(dst), dst.name,
                 fp[0], fp[1], new_cat
             )
-            logger.info(f"MOVE | {event.get_sender_id()} | {src.name} -> {dst}")
+            logger.info(f"[NAS] MOVE | {event.get_sender_id()} | {src.name} -> {dst}")
             yield event.plain_result(f"已移动到 {dst}")
         except Exception as e:
+            logger.error(f"[NAS] 移动失败: {e}")
             yield event.plain_result(f"移动失败: {e}")
 
-    # ---------- 指令：磁盘空间 ----------
+    # ---------- du ----------
 
     @filter.regex(r"^/?du(\s|$)|^空间$")
     async def cmd_du(self, event: AstrMessageEvent):
@@ -710,13 +454,12 @@ class NASPlugin(Star):
 
         yield event.plain_result("\n".join(lines))
 
-    # ---------- 指令：帮助 ----------
+    # ---------- nas ----------
 
     @filter.regex(r"^/?nas(\s|$)")
     async def cmd_help(self, event: AstrMessageEvent):
         yield event.plain_result(
             "NAS 助手 v2.1\n\n"
-            "自动功能: 私聊发文件自动分类保存\n\n"
             "/ls [路径]      - 查看目录\n"
             "/get 文件名     - 发送文件\n"
             "/search 关键词  - 搜索文件\n"
@@ -724,12 +467,10 @@ class NASPlugin(Star):
             "/mv 源 目标     - 移动/重命名\n"
             "/du             - 磁盘空间\n"
             "/vacuum         - 数据库整理 (管理员)\n"
-            "/nas            - 此帮助\n\n"
-            "分类: Images / Videos / Music / Documents / Archives / Others"
+            "/nas            - 此帮助"
         )
 
-
-    # ---------- 指令：数据库整理 ----------
+    # ---------- vacuum ----------
 
     @filter.regex(r"^/?vacuum$")
     async def cmd_vacuum(self, event: AstrMessageEvent):
