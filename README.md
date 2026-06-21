@@ -1,5 +1,7 @@
 # 📦 astrbot_plugin_nas
 
+> **Language:** 中文 | [English](./README_EN.md)
+
 ![:name](https://count.getloli.com/@astrbot_plugin_nas?name=astrbot_plugin_nas&theme=minecraft&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
 
 > 🚀 **AstrBot 私聊文件自动归档插件** — 基于 SQLite WAL 索引 + 文件系统 Single Source of Truth 架构，支持自动分类、去重、模糊检索与灾难自愈。
@@ -10,7 +12,7 @@
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ 项目结构
 
 ```
 main.py          ← 插件入口 + 命令处理 (482行)
@@ -20,178 +22,178 @@ main.py          ← 插件入口 + 命令处理 (482行)
 
 ```
                 ┌──────────────────┐
-                │   User (Private)  │
+                │   用户（私聊）     │
                 └────────┬─────────┘
                          │
-                 AstrBot Framework
+                 AstrBot 框架
                          │
               ┌──────────▼──────────┐
-              │    NAS Plugin       │
-              │  (regex filter)     │
+              │    NAS 插件          │
+              │  (正则过滤器)         │
               └──────────┬──────────┘
                          │
               ┌──────────▼──────────┐
-              │   SQLite (WAL)      │  ← 📊 Index Cache (rebuildable)
+              │   SQLite (WAL)      │  ← 📊 索引缓存（可重建）
               │  Hash / Path / Name │
               └──────────┬──────────┘
                          │
               ┌──────────▼──────────┐
-              │    File System      │  ← 💾 Single Source of Truth
-              │   (Local / NAS)     │
+              │    文件系统           │  ← 💾 唯一真实数据源
+              │   (本地 / NAS)       │
               └─────────────────────┘
 ```
 
-**💡 Design Principle:** File system is the ground truth. SQLite is a disposable index cache — delete `files.db`, restart, and the index rebuilds automatically via fingerprint-based scan.
+**💡 设计原则：** 文件系统是真实数据源，SQLite 只是可丢弃的索引缓存——删除 `files.db` 后重启，索引会通过指纹扫描自动重建。
 
 ---
 
-## ✨ Key Features
+## ✨ 核心功能
 
-| 🔧 Feature | 📝 Description |
-|------------|----------------|
-| 🗂️ **Auto-classify** | Extension-based routing to `Images/` `Videos/` `Music/` `Documents/` `Archives/` `Others/` |
-| 🔐 **Deduplication** | MD5 hash check; skip if content-identical file exists |
-| 🔍 **Fuzzy Search** | SQLite `LIKE` query with indexed `name` column — O(log n) retrieval |
-| ⚡ **WAL Mode** | `PRAGMA journal_mode=WAL` — concurrent read/write without table lock |
-| 🧵 **Async I/O** | All SQLite ops wrapped in `asyncio.to_thread()` — never blocks the event loop |
-| 🛡️ **Disaster Recovery** | Corrupt DB → auto-backup + rebuild from FS; stale index → lazy cleanup on query |
-| 🔄 **Fingerprint Rebuild** | Startup scan compares `(size, mtime)` first; MD5 only on delta — O(1) for unchanged files |
-| 🚫 **Path Traversal Guard** | All ops validated via `Path.resolve().relative_to(root)` |
-| 👥 **RBAC** | Admin / User separation; delete & move restricted to admins |
-| ⛓️ **Symlink Protection** | Skip symlinks during traversal to prevent directory escape |
-| ✅ **Soft-delete Confirmation** | `/rm` requires explicit `确认删除` reply with TTL-based expiry |
-| 🔄 **Transactional Move** | `/mv` uses single `UPDATE ... WHERE path=?` — atomic, no orphan records |
-| 🏥 **Health Check** | `/health` — instant status: file count, DB size, NAS usage, rebuild state |
-| ⏱️ **Timeout Handling** | File send failures caught gracefully with user-friendly message |
+| 🔧 功能 | 📝 说明 |
+|---------|---------|
+| 🗂️ **自动分类** | 按扩展名自动归档到 `Images/` `Videos/` `Music/` `Documents/` `Archives/` `Others/` |
+| 🔐 **文件去重** | MD5 哈希校验，内容相同的文件自动跳过 |
+| 🔍 **模糊搜索** | SQLite `LIKE` 查询 + `name` 列索引，O(log n) 检索 |
+| ⚡ **WAL 模式** | `PRAGMA journal_mode=WAL`，并发读写不锁表 |
+| 🧵 **异步 IO** | 所有 SQLite 操作通过 `asyncio.to_thread()` 隔离，不阻塞事件循环 |
+| 🛡️ **灾难恢复** | 数据库损坏 → 自动备份 + 从文件系统重建；脏索引 → 查询时懒清理 |
+| 🔄 **指纹重建** | 启动时先比对 `(size, mtime)` 指纹，未变化的跳过 MD5 计算——O(1) |
+| 🚫 **路径穿越防护** | 所有操作通过 `Path.resolve().relative_to(root)` 校验 |
+| 👥 **权限管理** | 管理员/普通用户分离，删除和移动仅限管理员 |
+| ⛓️ **软链接保护** | 遍历时自动跳过软链接，防止目录逃逸 |
+| ✅ **删除二次确认** | `/rm` 需要回复「确认删除」才执行，超时自动取消 |
+| 🔄 **事务化移动** | `/mv` 使用单条 `UPDATE ... WHERE path=?`，原子操作不产生孤儿记录 |
+| 🏥 **健康检查** | `/health` 一键查看：文件数、数据库大小、NAS 占用、重建状态 |
+| ⏱️ **超时处理** | 文件发送失败时捕获异常，友好提示用户 |
 
 ---
 
-## 🚀 Quick Start
+## 🚀 快速开始
 
-### 📲 Install via Plugin Market
+### 📲 通过插件市场安装
 
-AstrBot WebUI → Plugin Market → search `astrbot_plugin_nas` → Install → Restart
+AstrBot WebUI → 插件市场 → 搜索 `astrbot_plugin_nas` → 安装 → 重启
 
-### 💻 Install via Git
+### 💻 通过 Git 安装
 
 ```bash
 cd /AstrBot/data/plugins
 git clone https://github.com/pakhozako/astrbot_plugin_nas
 ```
 
-Restart AstrBot.
+重启 AstrBot。
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ 配置说明
 
-| 🔑 Key | 📌 Default | 📖 Description |
-|--------|------------|----------------|
-| `save_root` | `data/plugin_data/astrbot_plugin_nas` | 📁 Root directory (local path or SMB/NFS mount) |
-| `allowed_users` | `[]` | ✅ Whitelist of QQ IDs; empty = all users allowed |
-| `admin_users` | `[]` | 👑 Admin QQ IDs (can delete/move files) |
-| `max_file_size` | `2048` | 📏 Max file size in MB |
-| `auto_save_enabled` | `true` | 💾 Auto-save files received via private chat |
-| `dedup_enabled` | `true` | 🔐 MD5-based deduplication |
-| `delete_confirm_ttl` | `120` | ⏱️ Delete confirmation timeout (seconds) |
-| `log_enabled` | `true` | 📝 Enable operation logging |
-| `categories` | `""` | 🏷️ Custom category rules (JSON); empty = default |
-
----
-
-## 🎮 Commands
-
-| 📋 Command | 📖 Description |
-|------------|----------------|
-| `ls [path]` | 📂 List directory contents |
-| `get <filename>` | 📤 Send saved file by name (supports absolute path) |
-| `search <keyword>` | 🔍 Fuzzy search across all files |
-| `rm <filename>` | 🗑️ Delete file (requires confirmation) |
-| `mv <src> <dst>` | 📁 Move / rename file |
-| `du` | 💾 Disk usage & file statistics |
-| `health` | 🏥 Health check (file count, DB size, NAS usage, rebuild status) |
-| `vacuum` | 🧹 SQLite VACUUM + ANALYZE (admin only) |
-| `nas` | ❓ Show help |
-| `确认删除` | ✅ Confirm pending delete |
-| `取消` | ❌ Cancel pending delete |
+| 🔑 配置项 | 📌 默认值 | 📖 说明 |
+|----------|----------|---------|
+| `save_root` | `data/plugin_data/astrbot_plugin_nas` | 📁 文件保存根目录（本地路径或 SMB/NFS 挂载路径） |
+| `allowed_users` | `[]` | ✅ 允许使用的 QQ 列表，留空则所有用户可用 |
+| `admin_users` | `[]` | 👑 管理员 QQ 列表（可删除/移动文件） |
+| `max_file_size` | `2048` | 📏 单文件大小上限（MB） |
+| `auto_save_enabled` | `true` | 💾 私聊收到文件时自动保存 |
+| `dedup_enabled` | `true` | 🔐 基于 MD5 的文件去重 |
+| `delete_confirm_ttl` | `120` | ⏱️ 删除确认超时时间（秒） |
+| `log_enabled` | `true` | 📝 启用操作日志 |
+| `categories` | `""` | 🏷️ 自定义分类规则（JSON），留空使用默认分类 |
 
 ---
 
-## 🛡️ Disaster Recovery
+## 🎮 命令列表
 
-| 🚨 Scenario | ⚙️ Behavior |
-|-------------|-------------|
-| `files.db` deleted | 🔄 Restart → auto-rebuild from FS → full recovery |
-| `files.db` corrupt | 💥 `integrity_check` fails → backup as `files.db.broken.<timestamp>` → rebuild |
-| File deleted externally | 🧹 `/get` or `/search` detects missing → auto-clean stale index entry |
-| Rebuild in progress | ⏳ All read commands return "索引重建中，请稍后再试" |
-
-**🛡️ Zero data loss guarantee** — files live on disk, index is always reconstructible.
+| 📋 命令 | 📖 说明 |
+|---------|---------|
+| `ls [路径]` | 📂 查看目录内容 |
+| `get <文件名>` | 📤 发送已保存的文件（支持绝对路径） |
+| `search <关键词>` | 🔍 模糊搜索文件 |
+| `rm <文件名>` | 🗑️ 删除文件（需二次确认） |
+| `mv <源> <目标>` | 📁 移动/重命名文件 |
+| `du` | 💾 磁盘空间和文件统计 |
+| `health` | 🏥 健康检查（文件数、数据库大小、NAS 占用、重建状态） |
+| `vacuum` | 🧹 SQLite VACUUM + ANALYZE（仅管理员） |
+| `nas` | ❓ 显示帮助 |
+| `确认删除` | ✅ 确认待执行的删除操作 |
+| `取消` | ❌ 取消待执行的删除操作 |
 
 ---
 
-## ⚡ Performance (Theoretical)
+## 🛡️ 灾难恢复
 
-| 📊 Files | 🔄 Rebuild | 🔍 `/search` | 📤 `/get` | 💾 `/du` |
-|----------|-----------|-------------|-----------|---------|
+| 🚨 场景 | ⚙️ 行为 |
+|---------|---------|
+| `files.db` 被删除 | 🔄 重启 → 从文件系统自动重建 → 完全恢复 |
+| `files.db` 损坏 | 💥 `integrity_check` 失败 → 备份为 `files.db.broken.<时间戳>` → 重建 |
+| 文件被外部删除 | 🧹 `/get` 或 `/search` 检测到缺失 → 自动清理脏索引记录 |
+| 重建进行中 | ⏳ 所有读命令返回「索引重建中，请稍后再试」 |
+
+**🛡️ 零数据丢失保证** —— 文件存储在磁盘上，索引随时可重建。
+
+---
+
+## ⚡ 性能表现（理论值）
+
+| 📊 文件数 | 🔄 重建 | 🔍 `/search` | 📤 `/get` | 💾 `/du` |
+|----------|--------|-------------|----------|---------|
 | 1K | < 1s | < 5ms | < 2ms | < 1ms |
 | 10K | < 3s | < 10ms | < 5ms | < 2ms |
 | 50K | < 10s | < 20ms | < 10ms | < 3ms |
 | 100K | < 30s | < 50ms | < 15ms | < 5ms |
 
-🔄 Fingerprint-based rebuild ensures O(1) skip for unchanged files.
+🔄 基于指纹的重建机制确保未变化文件 O(1) 跳过。
 
 ---
 
-## ❓ FAQ
+## ❓ 常见问题
 
-**Q: 🗑️ Why won't deleting the database lose my files?**
-A: 💾 File system is the Single Source of Truth. SQLite is an index cache. Files exist independently of the database.
+**Q: 🗑️ 删除数据库后文件会丢失吗？**
+A: 💾 不会。文件系统是唯一真实数据源，SQLite 只是索引缓存。文件独立于数据库存在。
 
-**Q: 🔍 Why can't I find a file via `/search`?**
-A: ⏳ Index may be rebuilding (wait for completion), file may be outside `save_root`, or keyword mismatch (try shorter term).
+**Q: 🔍 为什么 `/search` 搜不到文件？**
+A: ⏳ 索引可能正在重建中（等待完成），文件可能在 `save_root` 目录外，或关键词不匹配（试试更短的关键词）。
 
-**Q: 🔄 How to rebuild the index?**
-A: 🔄 Restart AstrBot. The plugin runs `rebuild_from_fs` automatically on startup.
+**Q: 🔄 如何重建索引？**
+A: 🔄 重启 AstrBot 即可。插件启动时会自动执行 `rebuild_from_fs`。
 
-**Q: 🧹 How to optimize the database?**
-A: 🧹 Run `/vacuum` (admin only) — executes `VACUUM` + `ANALYZE` to reclaim space and optimize indexes.
-
----
-
-## 🗺️ Roadmap
-
-**v2.x (Current)**
-- ✅ File system as Single Source of Truth
-- ✅ SQLite WAL mode
-- ✅ Fingerprint-based rebuild
-- ✅ Async I/O isolation
-- ✅ Disaster recovery with corruption detection
-- ✅ `/health` endpoint
-- ✅ Timeout handling for file sends
-
-**v3.x (Planned)**
-- 🔧 `/repair` index integrity check
-- 🖥️ Web dashboard for file management
-- 🖼️ File preview (thumbnail / text excerpt)
-- ⏰ Periodic background consistency check
-- 📚 File versioning
+**Q: 🧹 如何优化数据库？**
+A: 🧹 执行 `/vacuum`（仅管理员）—— 执行 `VACUUM` + `ANALYZE` 回收空间并优化索引。
 
 ---
 
-## 📄 License
+## 🗺️ 路线图
+
+**v2.x（当前）**
+- ✅ 文件系统作为唯一真实数据源
+- ✅ SQLite WAL 模式
+- ✅ 基于指纹的重建机制
+- ✅ 异步 IO 隔离
+- ✅ 数据库损坏灾难恢复
+- ✅ `/health` 健康检查
+- ✅ 文件发送超时处理
+
+**v3.x（计划中）**
+- 🔧 `/repair` 索引完整性检查
+- 🖥️ Web 管理面板
+- 🖼️ 文件预览（缩略图/文本摘要）
+- ⏰ 定期后台一致性检查
+- 📚 文件版本管理
+
+---
+
+## 📄 许可证
 
 [MIT](LICENSE)
 
 ---
 
-## 🙏 Acknowledgements
+## 🙏 致谢
 
-- 🤖 [AstrBot](https://github.com/AstrBotDevs/AstrBot) — Agentic AI assistant framework
+- 🤖 [AstrBot](https://github.com/AstrBotDevs/AstrBot) — Agentic AI 助手框架
 
 ---
 
-## 📬 Contact
+## 📬 联系方式
 
 - 🐙 GitHub: [pakhozako/astrbot_plugin_nas](https://github.com/pakhozako/astrbot_plugin_nas)
-- 🐛 Issues: [Submit here](https://github.com/pakhozako/astrbot_plugin_nas/issues)
+- 🐛 Issues: [提交问题](https://github.com/pakhozako/astrbot_plugin_nas/issues)
