@@ -13,6 +13,12 @@
 ## 🏗️ Architecture
 
 ```
+main.py          ← 插件入口 + 命令处理 (482行)
+├── index.py     ← SQLite 索引层 (161行)
+└── utils.py     ← 工具函数 + 分类器 (52行)
+```
+
+```
                 ┌──────────────────┐
                 │   User (Private)  │
                 └────────┬─────────┘
@@ -55,6 +61,8 @@
 | ⛓️ **Symlink Protection** | Skip symlinks during traversal to prevent directory escape |
 | ✅ **Soft-delete Confirmation** | `/rm` requires explicit `确认删除` reply with TTL-based expiry |
 | 🔄 **Transactional Move** | `/mv` uses single `UPDATE ... WHERE path=?` — atomic, no orphan records |
+| 🏥 **Health Check** | `/health` — instant status: file count, DB size, NAS usage, rebuild state |
+| ⏱️ **Timeout Handling** | File send failures caught gracefully with user-friendly message |
 
 ---
 
@@ -96,11 +104,12 @@ Restart AstrBot.
 | 📋 Command | 📖 Description |
 |------------|----------------|
 | `ls [path]` | 📂 List directory contents |
-| `get <filename>` | 📤 Send saved file by name |
+| `get <filename>` | 📤 Send saved file by name (supports absolute path) |
 | `search <keyword>` | 🔍 Fuzzy search across all files |
 | `rm <filename>` | 🗑️ Delete file (requires confirmation) |
 | `mv <src> <dst>` | 📁 Move / rename file |
 | `du` | 💾 Disk usage & file statistics |
+| `health` | 🏥 Health check (file count, DB size, NAS usage, rebuild status) |
 | `vacuum` | 🧹 SQLite VACUUM + ANALYZE (admin only) |
 | `nas` | ❓ Show help |
 | `确认删除` | ✅ Confirm pending delete |
@@ -158,9 +167,10 @@ A: 🧹 Run `/vacuum` (admin only) — executes `VACUUM` + `ANALYZE` to reclaim 
 - ✅ Fingerprint-based rebuild
 - ✅ Async I/O isolation
 - ✅ Disaster recovery with corruption detection
+- ✅ `/health` endpoint
+- ✅ Timeout handling for file sends
 
 **v3.x (Planned)**
-- 🏥 `/health` endpoint
 - 🔧 `/repair` index integrity check
 - 🖥️ Web dashboard for file management
 - 🖼️ File preview (thumbnail / text excerpt)
@@ -185,4 +195,3 @@ A: 🧹 Run `/vacuum` (admin only) — executes `VACUUM` + `ANALYZE` to reclaim 
 
 - 🐙 GitHub: [pakhozako/astrbot_plugin_nas](https://github.com/pakhozako/astrbot_plugin_nas)
 - 🐛 Issues: [Submit here](https://github.com/pakhozako/astrbot_plugin_nas/issues)
-- 💬 QQ: 2413474391
