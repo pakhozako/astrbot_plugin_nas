@@ -138,7 +138,6 @@ class NASPlugin(Star):
 
             category = FileClassifier.get_category(name)
             save_dir = self.root / category
-            save_dir.mkdir(parents=True, exist_ok=True)
 
             save_path = save_dir / name
             stem, suffix = save_path.stem, save_path.suffix

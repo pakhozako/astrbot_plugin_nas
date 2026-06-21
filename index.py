@@ -36,24 +36,27 @@ class FileIndex:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS files (
-                    hash TEXT PRIMARY KEY,
-                    path TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    size INTEGER NOT NULL,
-                    mtime INTEGER NOT NULL,
-                    category TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                )
-            """)
-            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
-            if "mtime" not in existing_cols:
-                conn.execute("ALTER TABLE files ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON files(path)")
+            self._create_table(conn)
             conn.commit()
+
+    def _create_table(self, conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS files (
+                hash TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL,
+                size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+                category TEXT NOT NULL, created_at INTEGER NOT NULL
+            )
+        """)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
+        if "mtime" not in cols:
+            conn.execute("ALTER TABLE files ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_path ON files(path)")
+
+    @staticmethod
+    def _rows_to_dicts(rows):
+        return [{"path": r[0], "name": r[1], "size": r[2], "category": r[3]} for r in rows]
 
     def has_hash(self, h: str) -> str | None:
         with self._lock, sqlite3.connect(self.db_path) as conn:
@@ -87,7 +90,7 @@ class FileIndex:
                 "SELECT path, name, size, category FROM files WHERE name LIKE ?",
                 (f"%{keyword}%",)
             ).fetchall()
-            return [{"path": r[0], "name": r[1], "size": r[2], "category": r[3]} for r in rows]
+            return self._rows_to_dicts(rows)
 
     def find_by_name(self, name: str) -> list:
         with self._lock, sqlite3.connect(self.db_path) as conn:
@@ -95,7 +98,7 @@ class FileIndex:
                 "SELECT path, name, size, category FROM files WHERE name=?",
                 (name,)
             ).fetchall()
-            return [{"path": r[0], "name": r[1], "size": r[2], "category": r[3]} for r in rows]
+            return self._rows_to_dicts(rows)
 
     def get_stats(self) -> dict:
         with self._lock, sqlite3.connect(self.db_path) as conn:
