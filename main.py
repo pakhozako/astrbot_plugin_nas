@@ -467,18 +467,12 @@ class NASPlugin(Star):
         status = "重建中" if self._rebuilding else "正常"
 
         yield event.plain_result(
-            f"NAS 状态
-
-"
-            f"文件数: {stats['total_count']}
-"
-            f"数据库大小: {format_size(db_size)}
-"
-            f"NAS占用: {format_size(disk.used)}
-"
-            f"重建状态: {status}
-"
-            f"版本: v2.1.0"
+            f"NAS \u72b6\u6001\n\n"
+            f"\u6587\u4ef6\u6570: {stats['total_count']}\n"
+            f"\u6570\u636e\u5e93\u5927\u5c0f: {format_size(db_size)}\n"
+            f"NAS\u5360\u7528: {format_size(disk.used)}\n"
+            f"\u91cd\u5efa\u72b6\u6001: {status}\n"
+            f"\u7248\u672c: v2.1.0"
         )
 
     # ---------- nas ----------
