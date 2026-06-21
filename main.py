@@ -486,6 +486,7 @@ class NASPlugin(Star):
             "/rm 文件名      - 删除文件 (需确认)\n"
             "/mv 源 目标     - 移动/重命名\n"
             "/du             - 磁盘空间\n"
+            "/health         - 健康检查\n"
             "/vacuum         - 数据库整理 (管理员)\n"
             "/nas            - 此帮助"
         )
