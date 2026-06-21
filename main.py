@@ -462,14 +462,13 @@ class NASPlugin(Star):
 
         stats = await asyncio.to_thread(self.index.get_stats)
         db_size = self.index.get_db_size()
-        disk = shutil.disk_usage(self.root)
         status = "重建中" if self._rebuilding else "正常"
 
         yield event.plain_result(
             f"NAS \u72b6\u6001\n\n"
             f"\u6587\u4ef6\u6570: {stats['total_count']}\n"
             f"\u6570\u636e\u5e93\u5927\u5c0f: {format_size(db_size)}\n"
-            f"NAS\u5360\u7528: {format_size(disk.used)}\n"
+            f"NAS\u5360\u7528: {format_size(stats['total_size'])}\n"
             f"\u91cd\u5efa\u72b6\u6001: {status}\n"
             f"\u7248\u672c: v2.1.0"
         )
