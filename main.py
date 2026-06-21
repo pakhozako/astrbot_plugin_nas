@@ -454,6 +454,33 @@ class NASPlugin(Star):
 
         yield event.plain_result("\n".join(lines))
 
+    # ---------- health ----------
+
+    @filter.regex(r"^/?health$")
+    async def cmd_health(self, event: AstrMessageEvent):
+        if not self._is_allowed(event.get_sender_id()):
+            return
+
+        stats = await asyncio.to_thread(self.index.get_stats)
+        db_size = self.index.get_db_size()
+        disk = shutil.disk_usage(self.root)
+        status = "重建中" if self._rebuilding else "正常"
+
+        yield event.plain_result(
+            f"NAS 状态
+
+"
+            f"文件数: {stats['total_count']}
+"
+            f"数据库大小: {format_size(db_size)}
+"
+            f"NAS占用: {format_size(disk.used)}
+"
+            f"重建状态: {status}
+"
+            f"版本: v2.1.0"
+        )
+
     # ---------- nas ----------
 
     @filter.regex(r"^/?nas(\s|$)")
