@@ -487,6 +487,7 @@ class NASPlugin(Star):
                 return
             logger.info(f"SEND | {event.get_sender_id()} | {file_path}")
             yield event.chain_result([File(name=file_path.name, file=str(file_path))])
+            yield event.plain_result(f"已发送: {file_path.name} ({format_size(file_size)})")
             return
 
         # 按文件名搜索
@@ -521,6 +522,7 @@ class NASPlugin(Star):
 
         logger.info(f"SEND | {event.get_sender_id()} | {info['category']}/{info['name']}")
         yield event.chain_result([File(name=info["name"], file=str(file_path))])
+        yield event.plain_result(f"已发送: {info['name']} ({format_size(info['size'])})")
 
     # ---------- 指令：搜索 ----------
 
