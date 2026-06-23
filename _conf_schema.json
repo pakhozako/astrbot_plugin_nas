@@ -3,7 +3,7 @@
     "type": "string",
     "description": "文件保存根目录",
     "hint": "支持本地路径或 NAS 挂载路径，留空则使用 AstrBot 默认数据目录",
-    "default": ""
+    "default": "data/plugin_data/astrbot_plugin_nas"
   },
   "allowed_users": {
     "type": "list",

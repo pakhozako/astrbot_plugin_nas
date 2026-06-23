@@ -15,8 +15,8 @@
 ## 🏗️ Project Structure
 
 ```
-main.py          ← Plugin entry + command handling (482 lines)
-├── index.py     ← SQLite index layer (161 lines)
+main.py          ← Plugin entry + command handling
+├── index.py     ← SQLite index layer
 └── utils.py     ← Utility functions + classifier (52 lines)
 ```
 
@@ -62,8 +62,8 @@ main.py          ← Plugin entry + command handling (482 lines)
 | 👥 **RBAC** | Admin / User separation; delete & move restricted to admins |
 | ⛓️ **Symlink Protection** | Skip symlinks during traversal to prevent directory escape |
 | ✅ **Soft-delete Confirmation** | `/rm` requires explicit `确认删除` reply with TTL-based expiry |
-| 🔄 **Transactional Move** | `/mv` uses single `UPDATE ... WHERE path=?` — atomic, no orphan records |
-| 🏥 **Health Check** | `/health` — instant status: file count, DB size, NAS usage, rebuild state |
+| 🔄 **Index Repair** | `/repair` removes stale records, adds missing records, updates changed records |
+| 🏥 **Status Summary** | `/du` shows disk space, DB size, file stats, and index status |
 | ⏱️ **Timeout Handling** | File send failures caught gracefully with user-friendly message |
 
 ---
@@ -105,17 +105,16 @@ Restart AstrBot.
 
 | 📋 Command | 📖 Description |
 |------------|----------------|
-| `ls [path]` | 📂 List directory contents |
-| `get <filename>` | 📤 Send saved file by name (supports absolute path) |
-| `search <keyword>` | 🔍 Fuzzy search across all files |
-| `rm <filename>` | 🗑️ Delete file (requires confirmation) |
-| `mv <src> <dst>` | 📁 Move / rename file |
-| `du` | 💾 Disk usage & file statistics |
-| `health` | 🏥 Health check (file count, DB size, NAS usage, rebuild status) |
-| `vacuum` | 🧹 SQLite VACUUM + ANALYZE (admin only) |
 | `nas` | ❓ Show help |
-| `确认删除` | ✅ Confirm pending delete |
-| `取消` | ❌ Cancel pending delete |
+| `ls [path]` | 📂 List directory contents |
+| `tree [path] [depth]` | 🌳 Show directory tree (default depth 2, max 5) |
+| `get <filename>` | 📤 Send saved file by name (supports `category/filename`) |
+| `search <keyword>` | 🔍 Fuzzy search across all files |
+| `recent [limit]` | 🕘 Show recently saved files (default 10, max 30) |
+| `rm <filename>` | 🗑️ Delete file (admin, requires confirmation) |
+| `rename <src> <new_name>` | ✏️ Rename file (admin, file name only) |
+| `du` | 💾 Space and status summary |
+| `repair` | 🛠️ Repair index (remove stale records, add missing records; admin only) |
 
 ---
 
@@ -156,8 +155,8 @@ A: ⏳ Index may be rebuilding (wait for completion), file may be outside `save_
 **Q: 🔄 How to rebuild the index?**
 A: 🔄 Restart AstrBot. The plugin runs `rebuild_from_fs` automatically on startup.
 
-**Q: 🧹 How to optimize the database?**
-A: 🧹 Run `/vacuum` (admin only) — executes `VACUUM` + `ANALYZE` to reclaim space and optimize indexes.
+**Q: 🧹 How to repair the index?**
+A: 🧹 Run `/repair` (admin only) — removes stale records, adds missing records, and updates changed records.
 
 ---
 
@@ -169,11 +168,11 @@ A: 🧹 Run `/vacuum` (admin only) — executes `VACUUM` + `ANALYZE` to reclaim 
 - ✅ Fingerprint-based rebuild
 - ✅ Async I/O isolation
 - ✅ Disaster recovery with corruption detection
-- ✅ `/health` endpoint
+- ✅ `/du` space and status summary
+- ✅ `/repair` index repair
 - ✅ Timeout handling for file sends
 
 **v3.x (Planned)**
-- 🔧 `/repair` index integrity check
 - 🖥️ Web dashboard for file management
 - 🖼️ File preview (thumbnail / text excerpt)
 - ⏰ Periodic background consistency check

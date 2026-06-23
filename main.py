@@ -7,6 +7,7 @@ import os
 import shutil
 import time
 import asyncio
+import json
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -24,7 +25,8 @@ class NASPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         cfg = config or {}
-        self.root = Path(cfg.get("save_root", str(Path("data/plugin_data/astrbot_plugin_nas")))).resolve()
+        save_root = cfg.get("save_root") or str(Path("data/plugin_data/astrbot_plugin_nas"))
+        self.root = Path(save_root).resolve()
         self.allowed = set(str(u) for u in cfg.get("allowed_users", []))
         self.admins = set(str(u) for u in cfg.get("admin_users", []))
         self.max_size = int(cfg.get("max_file_size", 2048)) * 1024 * 1024
@@ -32,12 +34,40 @@ class NASPlugin(Star):
         self.dedup = bool(cfg.get("dedup_enabled", True))
         self.confirm_ttl = int(cfg.get("delete_confirm_ttl", 120))
         self.log_enabled = bool(cfg.get("log_enabled", True))
+        self._load_categories(str(cfg.get("categories", "") or ""))
         self._delete_pending = {}
         self._rebuilding = False
 
         self._init_dirs()
         self.index = FileIndex(str(self.root / "files.db"))
         logger.info(f"[NAS] 根目录: {self.root} | 自动保存: {self.auto_save}")
+
+    def _log_info(self, message: str):
+        if self.log_enabled:
+            logger.info(message)
+
+    def _load_categories(self, raw: str):
+        if not raw.strip():
+            return
+        try:
+            categories = json.loads(raw)
+            if not isinstance(categories, dict):
+                raise ValueError("配置必须是 JSON 对象")
+            normalized = {}
+            for category, extensions in categories.items():
+                if not isinstance(category, str) or not isinstance(extensions, list):
+                    raise ValueError("分类名必须是字符串，扩展名必须是列表")
+                if not self._safe_dir_name(category):
+                    raise ValueError(f"分类名不合法: {category}")
+                normalized[category] = {str(ext).lower().lstrip(".") for ext in extensions}
+            FileClassifier.CATEGORIES = normalized
+        except Exception as e:
+            logger.warning(f"[NAS] 自定义分类规则无效，使用默认分类: {e}")
+
+    @staticmethod
+    def _safe_dir_name(name: str) -> bool:
+        clean = name.strip()
+        return bool(clean) and clean == name and Path(clean).name == clean and "/" not in clean and "\\" not in clean and clean not in {".", ".."}
 
     def _init_dirs(self):
         for cat in FileClassifier.get_all_categories():
@@ -124,6 +154,7 @@ class NASPlugin(Star):
                 return
 
             name = getattr(comp, 'name', None) or os.path.basename(source)
+            name = Path(str(name)).name
             if not name:
                 name = f"file_{int(time.time())}"
 
@@ -140,6 +171,9 @@ class NASPlugin(Star):
             save_dir = self.root / category
 
             save_path = save_dir / name
+            if not self._safe_path(save_path):
+                yield event.plain_result("文件名不合法")
+                return
             stem, suffix = save_path.stem, save_path.suffix
             idx = 1
             while save_path.exists():
@@ -153,7 +187,7 @@ class NASPlugin(Star):
                     self.index.add, src_hash, str(save_path), save_path.name,
                     fp[0], fp[1], category
                 )
-                logger.info(f"[NAS] SAVE | {uid} | {category}/{save_path.name} | {format_size(file_size)}")
+                self._log_info(f"[NAS] SAVE | {uid} | {category}/{save_path.name} | {format_size(file_size)}")
                 yield event.plain_result(f"已保存到 {save_path}")
             except Exception as e:
                 logger.error(f"[NAS] 文件保存失败: {e}")
@@ -220,6 +254,9 @@ class NASPlugin(Star):
         # 绝对路径
         if os.path.isabs(name):
             file_path = Path(name).resolve()
+            if not self._safe_path(file_path):
+                yield event.plain_result("路径不在允许范围内")
+                return
             if not file_path.exists():
                 yield event.plain_result(f"文件不存在: {name}")
                 return
@@ -230,7 +267,7 @@ class NASPlugin(Star):
             if file_size > self.max_size:
                 yield event.plain_result(f"文件过大: {format_size(file_size)}")
                 return
-            logger.info(f"[NAS] SEND | {event.get_sender_id()} | {file_path}")
+            self._log_info(f"[NAS] SEND | {event.get_sender_id()} | {file_path}")
             try:
                 yield event.chain_result([File(name=file_path.name, file=str(file_path))])
             except (asyncio.TimeoutError, Exception) as e:
@@ -261,6 +298,11 @@ class NASPlugin(Star):
         info = results[0]
         file_path = Path(info["path"])
 
+        if not self._safe_path(file_path):
+            await asyncio.to_thread(self.index.remove, str(file_path))
+            yield event.plain_result("索引路径不在允许范围内，已清理")
+            return
+
         if not file_path.exists():
             await asyncio.to_thread(self.index.remove, str(file_path))
             yield event.plain_result("文件已被外部删除，已清理索引")
@@ -269,7 +311,7 @@ class NASPlugin(Star):
             yield event.plain_result(f"文件过大: {format_size(info['size'])}")
             return
 
-        logger.info(f"[NAS] SEND | {event.get_sender_id()} | {info['category']}/{info['name']}")
+        self._log_info(f"[NAS] SEND | {event.get_sender_id()} | {info['category']}/{info['name']}")
         try:
             yield event.chain_result([File(name=info["name"], file=str(file_path))])
         except (asyncio.TimeoutError, Exception) as e:
@@ -299,7 +341,10 @@ class NASPlugin(Star):
         valid = []
         stale = []
         for r in results:
-            if os.path.exists(r["path"]):
+            path = Path(r["path"])
+            if not self._safe_path(path):
+                stale.append(r)
+            elif os.path.exists(r["path"]):
                 valid.append(r)
             else:
                 stale.append(r)
@@ -307,7 +352,7 @@ class NASPlugin(Star):
         if stale:
             for s in stale:
                 await asyncio.to_thread(self.index.remove, s["path"])
-            logger.info(f"[NAS] 搜索懒清理: {len(stale)} 条脏记录")
+            self._log_info(f"[NAS] 搜索懒清理: {len(stale)} 条脏记录")
 
         if not valid:
             yield event.plain_result(f"未找到包含「{keyword}」的文件")
@@ -316,6 +361,101 @@ class NASPlugin(Star):
         lines = [f"搜索结果 ({len(valid)}个):\n"]
         for r in valid[:20]:
             lines.append(f"  [{r['category']}] {r['name']} ({format_size(r['size'])})")
+        yield event.plain_result("\n".join(lines))
+
+    # ---------- recent ----------
+
+    @filter.regex(r"^/?recent(\s|$)|^最近文件(\s|$)")
+    async def cmd_recent(self, event: AstrMessageEvent):
+        if not self._is_allowed(event.get_sender_id()):
+            return
+        if self._rebuilding:
+            yield event.plain_result("NAS索引重建中，请稍后再试")
+            return
+
+        args = event.message_str.strip().split(maxsplit=1)
+        limit = 10
+        if len(args) > 1:
+            try:
+                limit = max(1, min(30, int(args[1].strip())))
+            except ValueError:
+                yield event.plain_result("用法: /recent [数量]")
+                return
+
+        results = await asyncio.to_thread(self.index.recent, limit)
+        valid = []
+        for r in results:
+            path = Path(r["path"])
+            if not self._safe_path(path):
+                await asyncio.to_thread(self.index.remove, r["path"])
+            elif os.path.exists(r["path"]):
+                valid.append(r)
+            else:
+                await asyncio.to_thread(self.index.remove, r["path"])
+
+        if not valid:
+            yield event.plain_result("暂无文件记录")
+            return
+
+        lines = [f"最近文件 ({len(valid)}个):\n"]
+        for r in valid:
+            lines.append(f"  [{r['category']}] {r['name']} ({format_size(r['size'])})")
+        yield event.plain_result("\n".join(lines))
+
+    # ---------- tree ----------
+
+    @filter.regex(r"^/?tree(\s|$)|^目录树(\s|$)")
+    async def cmd_tree(self, event: AstrMessageEvent):
+        if not self._is_allowed(event.get_sender_id()):
+            return
+
+        args = event.message_str.strip().split(maxsplit=2)
+        target = self.root
+        max_depth = 2
+        if len(args) > 1:
+            p = Path(args[1])
+            target = p.resolve() if p.is_absolute() else (self.root / p).resolve()
+        if len(args) > 2:
+            try:
+                max_depth = max(1, min(5, int(args[2].strip())))
+            except ValueError:
+                yield event.plain_result("用法: /tree [路径] [深度]")
+                return
+
+        if not self._safe_path(target):
+            yield event.plain_result("路径不在允许范围内")
+            return
+        if not target.is_dir():
+            yield event.plain_result(f"目录不存在: {target}")
+            return
+
+        root_name = str(target.relative_to(self.root) or "/")
+        lines = [root_name]
+        limit = 80
+
+        def walk_dir(path: Path, depth: int):
+            if len(lines) >= limit or depth > max_depth:
+                return
+            entries = sorted(path.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+            for entry in entries:
+                if len(lines) >= limit:
+                    return
+                if entry.is_symlink():
+                    continue
+                prefix = "  " * depth
+                if entry.is_dir():
+                    lines.append(f"{prefix}{entry.name}/")
+                    walk_dir(entry, depth + 1)
+                else:
+                    try:
+                        size = entry.stat().st_size
+                    except OSError:
+                        continue
+                    lines.append(f"{prefix}{entry.name} ({format_size(size)})")
+
+        walk_dir(target, 1)
+        if len(lines) >= limit:
+            lines.append("... 输出已截断")
         yield event.plain_result("\n".join(lines))
 
     # ---------- rm ----------
@@ -350,6 +490,10 @@ class NASPlugin(Star):
         info = results[0]
         target = Path(info["path"])
 
+        if not self._safe_path(target):
+            await asyncio.to_thread(self.index.remove, str(target))
+            yield event.plain_result("索引路径不在允许范围内，已清理")
+            return
         if not target.exists():
             await asyncio.to_thread(self.index.remove, str(target))
             yield event.plain_result("文件已被外部删除，已清理索引")
@@ -378,6 +522,10 @@ class NASPlugin(Star):
             return
 
         target: Path = waiting["path"]
+        if not self._safe_path(target):
+            await asyncio.to_thread(self.index.remove, str(target))
+            yield event.plain_result("索引路径不在允许范围内，已清理")
+            return
         if not target.exists():
             await asyncio.to_thread(self.index.remove, str(target))
             yield event.plain_result("文件已被外部删除，已清理索引")
@@ -388,7 +536,7 @@ class NASPlugin(Star):
 
         target.unlink()
         await asyncio.to_thread(self.index.remove, str(target))
-        logger.info(f"[NAS] DELETE | {uid} | {waiting['category']}/{waiting['name']}")
+        self._log_info(f"[NAS] DELETE | {uid} | {waiting['category']}/{waiting['name']}")
         yield event.plain_result(f"已删除: {waiting['name']}")
 
     @filter.regex(r"^取消$")
@@ -430,11 +578,72 @@ class NASPlugin(Star):
                 self.index.move, str(src), h, str(dst), dst.name,
                 fp[0], fp[1], new_cat
             )
-            logger.info(f"[NAS] MOVE | {event.get_sender_id()} | {src.name} -> {dst}")
+            self._log_info(f"[NAS] MOVE | {event.get_sender_id()} | {src.name} -> {dst}")
             yield event.plain_result(f"已移动到 {dst}")
         except Exception as e:
             logger.error(f"[NAS] 移动失败: {e}")
             yield event.plain_result(f"移动失败: {e}")
+
+    # ---------- rename ----------
+
+    @filter.regex(r"^/?rename(\s|$)|^重命名(\s|$)")
+    async def cmd_rename(self, event: AstrMessageEvent):
+        if not self._is_admin(event.get_sender_id()):
+            yield event.plain_result("仅管理员可重命名文件")
+            return
+
+        args = event.message_str.strip().split(maxsplit=2)
+        if len(args) < 3:
+            yield event.plain_result("用法: /rename 源文件 新名称")
+            return
+
+        raw_name = args[2].strip()
+        if not raw_name or "/" in raw_name or "\\" in raw_name or Path(raw_name).name != raw_name:
+            yield event.plain_result("新名称不能包含路径")
+            return
+
+        src_arg = args[1].strip()
+        src = Path(src_arg).resolve() if Path(src_arg).is_absolute() else (self.root / src_arg).resolve()
+        if not src.exists():
+            results = await asyncio.to_thread(self.index.find_by_name, src_arg)
+            if not results:
+                results = await asyncio.to_thread(self.index.search, src_arg)
+            if len(results) > 1:
+                locations = "\n".join(f"  [{r['category']}] {r['name']}" for r in results[:5])
+                yield event.plain_result(f"找到多个文件:\n{locations}\n请指定完整路径")
+                return
+            if results:
+                src = Path(results[0]["path"]).resolve()
+
+        if not self._safe_path(src):
+            yield event.plain_result("路径不合法")
+            return
+        if not src.exists() or not src.is_file():
+            yield event.plain_result(f"源文件不存在: {src_arg}")
+            return
+
+        dst = src.with_name(raw_name).resolve()
+        if not self._safe_path(dst):
+            yield event.plain_result("新名称不合法")
+            return
+        if dst.exists():
+            yield event.plain_result(f"目标已存在: {raw_name}")
+            return
+
+        try:
+            src.rename(dst)
+            fp = file_fingerprint(str(dst))
+            h = file_hash(str(dst))
+            new_cat = FileClassifier.get_category(dst.name)
+            await asyncio.to_thread(
+                self.index.move, str(src), h, str(dst), dst.name,
+                fp[0], fp[1], new_cat
+            )
+            self._log_info(f"[NAS] RENAME | {event.get_sender_id()} | {src.name} -> {dst.name}")
+            yield event.plain_result(f"已重命名为 {dst.name}")
+        except Exception as e:
+            logger.error(f"[NAS] 重命名失败: {e}")
+            yield event.plain_result(f"重命名失败: {e}")
 
     # ---------- du ----------
 
@@ -448,12 +657,16 @@ class NASPlugin(Star):
 
         usage = shutil.disk_usage(self.root)
         stats = await asyncio.to_thread(self.index.get_stats)
+        db_size = self.index.get_db_size()
+        status = "重建中" if self._rebuilding else "正常"
 
         lines = [
-            f"磁盘空间",
+            f"空间与状态",
             f"  总空间: {format_size(usage.total)}",
             f"  已用: {format_size(usage.used)}",
             f"  剩余: {format_size(usage.free)}",
+            f"  数据库: {format_size(db_size)}",
+            f"  索引状态: {status}",
             f"",
             f"文件统计 (共 {stats['total_count']} 个, {format_size(stats['total_size'])})",
         ]
@@ -483,21 +696,50 @@ class NASPlugin(Star):
             f"\u7248\u672c: v2.1.0"
         )
 
+    # ---------- repair ----------
+
+    @filter.regex(r"^/?repair$")
+    async def cmd_repair(self, event: AstrMessageEvent):
+        if not self._is_admin(event.get_sender_id()):
+            yield event.plain_result("仅管理员可修复索引")
+            return
+        if self._rebuilding:
+            yield event.plain_result("NAS索引重建中，请稍后再试")
+            return
+
+        self._rebuilding = True
+        yield event.plain_result("正在修复索引...")
+        try:
+            result = await asyncio.to_thread(self.index.repair_from_fs, self.root)
+            yield event.plain_result(
+                "索引修复完成\n"
+                f"  新增: {result['added']}\n"
+                f"  更新: {result['updated']}\n"
+                f"  清理: {result['removed']}\n"
+                f"  当前文件: {result['total']}"
+            )
+        except Exception as e:
+            logger.error(f"[NAS] 索引修复失败: {e}")
+            yield event.plain_result(f"索引修复失败: {e}")
+        finally:
+            self._rebuilding = False
+
     # ---------- nas ----------
 
     @filter.regex(r"^/?nas(\s|$)")
     async def cmd_help(self, event: AstrMessageEvent):
         yield event.plain_result(
             "NAS 助手 v2.1\n\n"
-            "/ls [路径]      - 查看目录\n"
-            "/get 文件名     - 发送文件\n"
-            "/search 关键词  - 搜索文件\n"
-            "/rm 文件名      - 删除文件 (需确认)\n"
-            "/mv 源 目标     - 移动/重命名\n"
-            "/du             - 磁盘空间\n"
-            "/health         - 健康检查\n"
-            "/vacuum         - 数据库整理 (管理员)\n"
-            "/nas            - 此帮助"
+            "/nas                 - 显示帮助\n"
+            "/ls [路径]           - 查看目录内容\n"
+            "/tree [路径] [深度]  - 查看目录树\n"
+            "/get 文件名          - 发送文件\n"
+            "/search 关键词       - 搜索文件\n"
+            "/recent [数量]       - 最近文件\n"
+            "/rm 文件名           - 删除文件 (管理员，需确认)\n"
+            "/rename 源 新名称    - 重命名文件 (管理员)\n"
+            "/du                  - 空间与状态统计\n"
+            "/repair              - 修复索引 (管理员)"
         )
 
     # ---------- vacuum ----------
