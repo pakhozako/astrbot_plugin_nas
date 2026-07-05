@@ -1,6 +1,8 @@
 """File, index, preview, import, and export helpers for NAS commands."""
 
 import asyncio
+import difflib
+import fnmatch
 import os
 import subprocess
 import shutil
@@ -31,9 +33,16 @@ class FileServiceMixin:
         }
 
     def _multiple_match_message(self, results: list[dict], command: str) -> str:
-        locations = "\n".join(f"  [{r['category']}] {r['name']}" for r in results[:8])
+        locations = "\n".join(f"  {self._index_row_label(r)}" for r in results[:8])
         suffix = "\n..." if len(results) > 8 else ""
-        return f"找到多个文件:\n{locations}{suffix}\n请使用 {command} category/file 或完整相对路径 指定"
+        return f"找到多个文件:\n{locations}{suffix}\n请使用 {command} 更精确的名称、category/file 或完整相对路径指定"
+
+    def _index_row_label(self, row: dict) -> str:
+        path = Path(row["path"])
+        try:
+            return str(path.resolve().relative_to(self.root.resolve()))
+        except ValueError:
+            return f"[{row['category']}] {row['name']}"
 
     def _direct_file_candidates(self, name: str, base_root: Path) -> list[Path]:
         normalized = name.replace("\\", "/")
@@ -82,11 +91,186 @@ class FileServiceMixin:
                         break
         return matches
 
+    @staticmethod
+    def _has_glob_pattern(text: str) -> bool:
+        return "*" in text or "?" in text
+
+    def _glob_match_values(self, path: Path, base_root: Path) -> list[str]:
+        resolved = path.resolve()
+        values = [resolved.name, str(resolved).replace("\\", "/")]
+        for root in (base_root.resolve(), self.root.resolve()):
+            try:
+                values.append(str(resolved.relative_to(root)).replace("\\", "/"))
+            except ValueError:
+                pass
+        return list(dict.fromkeys(values))
+
+    def _path_matches_glob(self, path: Path, pattern: str, base_root: Path) -> bool:
+        normalized = pattern.replace("\\", "/").lower()
+        return any(
+            fnmatch.fnmatchcase(value.lower(), normalized)
+            for value in self._glob_match_values(path, base_root)
+        )
+
+    def _row_matches_glob(self, row: dict, pattern: str, base_root: Path) -> bool:
+        return self._path_matches_glob(Path(row["path"]), pattern, base_root)
+
+    def _find_filesystem_glob_matches(self, root: Path, pattern: str, limit: int = 9) -> list[Path]:
+        matches = []
+        stack = [root]
+        while stack and len(matches) < limit:
+            current = stack.pop()
+            try:
+                entries = sorted(current.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir():
+                    if self._skip_internal_dir(entry):
+                        continue
+                    stack.append(entry)
+                    continue
+                if entry.is_file() and not self._skip_internal_file(entry):
+                    resolved = entry.resolve()
+                    if self._path_matches_glob(resolved, pattern, root):
+                        matches.append(resolved)
+                        if len(matches) >= limit:
+                            break
+        return matches
+
+    @staticmethod
+    def _fuzzy_key(text: str) -> str:
+        return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+    @staticmethod
+    def _fuzzy_tokens(text: str) -> list[str]:
+        tokens = []
+        current = []
+        for ch in text.casefold():
+            if ch.isalnum():
+                current.append(ch)
+            elif current:
+                tokens.append("".join(current))
+                current = []
+        if current:
+            tokens.append("".join(current))
+        return [token for token in tokens if token]
+
+    @staticmethod
+    def _is_subsequence(needle: str, haystack: str) -> bool:
+        if not needle:
+            return False
+        pos = 0
+        for ch in haystack:
+            if ch == needle[pos]:
+                pos += 1
+                if pos == len(needle):
+                    return True
+        return False
+
+    def _fuzzy_score(self, query: str, value: str) -> float:
+        query_key = self._fuzzy_key(query)
+        value_key = self._fuzzy_key(value)
+        if len(query_key) < 4 or not value_key:
+            return 0.0
+        if query_key == value_key:
+            return 1.0
+        if query_key in value_key:
+            return 0.98
+
+        token_score = 0.0
+        tokens = self._fuzzy_tokens(query)
+        if tokens:
+            hits = sum(1 for token in tokens if self._fuzzy_key(token) in value_key)
+            if hits == len(tokens):
+                token_score = 0.94
+            elif hits:
+                token_score = 0.58 + 0.24 * (hits / len(tokens))
+
+        ratio = difflib.SequenceMatcher(None, query_key, value_key).ratio()
+        subsequence_score = 0.0
+        if len(query_key) >= 6 and self._is_subsequence(query_key, value_key):
+            subsequence_score = 0.72
+
+        return max(token_score, ratio, subsequence_score)
+
+    def _fuzzy_min_score(self, query: str) -> float:
+        query_len = len(self._fuzzy_key(query))
+        if query_len >= 10:
+            return 0.70
+        if query_len >= 6:
+            return 0.76
+        return 0.84
+
+    def _rank_fuzzy_rows(self, rows: list[dict], query: str, base_root: Path, limit: int = 9) -> list[dict]:
+        min_score = self._fuzzy_min_score(query)
+        scored = []
+        for row in rows:
+            path = Path(row["path"])
+            score = max(
+                self._fuzzy_score(query, value)
+                for value in self._glob_match_values(path, base_root)
+            )
+            if score >= min_score:
+                scored.append((score, int(row.get("created_at") or 0), row))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        if not scored:
+            return []
+
+        top_score = scored[0][0]
+        keep_delta = 0.02 if top_score >= 0.9 else 0.05
+        cutoff = max(min_score, top_score - keep_delta)
+        return [row for score, _, row in scored if score >= cutoff][:limit]
+
+    def _find_filesystem_fuzzy_matches(self, root: Path, query: str, limit: int = 9) -> list[Path]:
+        min_score = self._fuzzy_min_score(query)
+        scored = []
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                entries = sorted(current.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir():
+                    if self._skip_internal_dir(entry):
+                        continue
+                    stack.append(entry)
+                    continue
+                if not entry.is_file() or self._skip_internal_file(entry):
+                    continue
+                resolved = entry.resolve()
+                score = max(
+                    self._fuzzy_score(query, value)
+                    for value in self._glob_match_values(resolved, root)
+                )
+                if score >= min_score:
+                    try:
+                        mtime = int(resolved.stat().st_mtime)
+                    except OSError:
+                        mtime = 0
+                    scored.append((score, mtime, resolved))
+
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        if not scored:
+            return []
+        top_score = scored[0][0]
+        keep_delta = 0.02 if top_score >= 0.9 else 0.05
+        cutoff = max(min_score, top_score - keep_delta)
+        return [path for score, _, path in scored if score >= cutoff][:limit]
+
     async def _resolve_indexed_file(
         self,
         query: str,
         command: str,
         allow_search: bool = True,
+        allow_glob: bool = False,
+        allow_fuzzy: bool = False,
         event: AstrMessageEvent | None = None,
     ) -> tuple[dict | None, str | None]:
         name = self._strip_quotes(query)
@@ -94,6 +278,23 @@ class FileServiceMixin:
             return None, "文件名不能为空"
 
         base_root = self._scope_root_for_event(event)
+        if allow_glob and self._has_glob_pattern(name):
+            rows = await asyncio.to_thread(self.index.find_under_path, str(base_root.resolve()))
+            rows = [r for r in rows if self._row_matches_glob(r, name, base_root)]
+            valid = await self._valid_existing_rows(rows, event)
+            if not valid:
+                fs_matches = await asyncio.to_thread(
+                    self._find_filesystem_glob_matches,
+                    base_root,
+                    name,
+                )
+                valid = [self._info_from_path(path) for path in fs_matches]
+            if not valid:
+                return None, f"未找到匹配文件: {name}"
+            if len(valid) > 1:
+                return None, self._multiple_match_message(valid, command)
+            return valid[0], None
+
         if os.path.isabs(name):
             file_path = Path(name).resolve()
             if not self._safe_path(file_path):
@@ -146,6 +347,19 @@ class FileServiceMixin:
         if not valid and "/" not in normalized:
             fs_matches = await asyncio.to_thread(self._find_filesystem_name_matches, base_root, name)
             valid = [self._info_from_path(path) for path in fs_matches]
+
+        if not valid and allow_fuzzy:
+            rows = await asyncio.to_thread(self.index.find_under_path, str(base_root.resolve()))
+            rows = self._filter_event_scope(event, rows)
+            fuzzy_rows = await asyncio.to_thread(self._rank_fuzzy_rows, rows, name, base_root)
+            valid = await self._valid_existing_rows(fuzzy_rows, event)
+            if not valid:
+                fs_matches = await asyncio.to_thread(
+                    self._find_filesystem_fuzzy_matches,
+                    base_root,
+                    name,
+                )
+                valid = [self._info_from_path(path) for path in fs_matches]
 
         if not valid:
             return None, f"未找到文件: {name}"

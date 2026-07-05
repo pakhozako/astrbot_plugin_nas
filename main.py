@@ -310,10 +310,16 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             return
         args = self._split_command_args(event, {"get"}, maxsplit=1)
         if len(args) < 1:
-            yield event.plain_result("用法: /get 文件名")
+            yield event.plain_result("用法: /get 文件名|路径|通配符")
             return
 
-        info, err = await self._resolve_indexed_file(args[0], "/get", event=event)
+        info, err = await self._resolve_indexed_file(
+            args[0],
+            "/get",
+            allow_glob=True,
+            allow_fuzzy=True,
+            event=event,
+        )
         if err:
             yield event.plain_result(err)
             return
