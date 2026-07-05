@@ -34,18 +34,18 @@ main.py              ← Plugin entry + AstrBot handlers
 | 🗂️ Auto-classification | Extension-based routing to `Images/` `Videos/` `Music/` `Documents/` `Archives/` `Others/` |
 | 🔐 Access control | Supports a management list; optional read-only access for everyone with one public directory and per-minute rate limits |
 | 🔍 Search | SQLite `LIKE` name/note search plus `tag:<tag>` |
-| 🏷️ Tags | `/tag` or `/标签` to view, add, and remove tags |
-| 📝 Notes | `/note` or `/备注` stores file notes that are searchable |
-| 📥 Path import | `/add` or `/添加` imports from any local path or mounted NAS path |
-| 👀 Directory watch | `/watch` or `/监控` adds external directories for manual or scheduled import |
-| 🧬 Duplicate audit | `/dups` or `/重复` lists duplicate groups by content hash |
+| 🏷️ Tags | `/tag` views, adds, and removes tags |
+| 📝 Notes | `/note` stores file notes that are searchable |
+| 📥 Path import | `/add` imports from any local path or mounted NAS path |
+| 👀 Directory watch | `/watch` adds external directories for manual or scheduled import |
+| 🧬 Duplicate audit | `/dups` lists duplicate groups by content hash |
 | 📦 Batch/export | `/batch` tags, untags, or moves matches; `/export` creates ZIP packages from selectors |
-| 🖼️ Preview | `/preview` or `/预览` supports images and text excerpts |
+| 🖼️ Preview | `/preview` supports images and text excerpts |
 | 🧵 I/O isolation | Hashing, copy, move, traversal, and SQLite operations run in worker threads |
 | 🛡️ Path guard | Managed read/delete/move operations stay inside `save_root` |
 | ⛓️ Symlink protection | Symlinks are skipped during import and traversal |
-| ✅ Delete confirmation | `/rm` or `/删除` requires `/确认删除` |
-| 🔄 Index repair | Startup rebuild, manual `/repair` or `/修复`, optional background consistency checks |
+| ✅ Delete confirmation | `/rm` requires `/confirm` |
+| 🔄 Index repair | Startup rebuild, manual `/repair`, optional background consistency checks |
 
 ---
 
@@ -94,30 +94,29 @@ After restarting AstrBot, configure the admin list and archive path as needed in
 
 ## 🎮 Commands
 
-| English | Chinese | Description |
-|---------|---------|-------------|
-| `/nashelp` | `/nas帮助` | Show help |
-| `/ls [path]` | `/列表 [路径]`, `/查看 [路径]` | List files |
-| `/get file` | `/获取 文件`, `/下载 文件` | Send archived file; supports `category/file` |
-| `/preview file` | `/预览 文件` | Image preview or text excerpt |
-| `/search keyword` | `/搜索 关键词` | Search files; use `tag:<tag>` for tags |
-| `/recent [limit]` | `/最近 [数量]` | Show recent files |
-| `/tags file` | `/查看标签 文件` | Show file tags |
-| `/note file [note]` | `/备注 文件 [备注]` | Show or set notes; use `-` to clear |
-| `/status` | `/状态`, `/空间` | Space and status summary |
-| `/add source [category]` | `/添加 源路径 [分类]` | Import from any local/NAS path |
-| `/watch list|add|rm|run` | `/监控 列表|添加|删除|扫描` | Manage watched directories and scan them |
-| `/dups [limit]` | `/重复 [数量]` | Show duplicate file groups |
-| `/batch selector tag|untag|move ...` | `/批量 选择器 标签|移除标签|移动 ...` | Batch tag, untag, or move files |
-| `/export selector [name.zip]` | `/导出 选择器 [文件名.zip]` | Export matching files as ZIP |
-| `/tag file [tags...]` | `/标签 文件 [标签...]` | View/add/remove tags; `-tag` removes |
-| `/rm file` | `/删除 文件` | Delete file; requires `/确认删除` |
-| `/确认删除` | - | Confirm pending delete |
-| `/取消` | - | Cancel pending delete |
-| `/mv source target` | `/移动 源 目标` | Move file |
-| `/rename source name` | `/重命名 源 新名称` | Rename file |
-| `/repair` | `/修复` | Repair index |
-| `/vacuum` | `/整理` | Compact/analyze database |
+| Command | Description |
+|---------|-------------|
+| `/nashelp` | Show help |
+| `/ls [path]` | List files |
+| `/tree [path] [depth]` | Show a directory tree; default depth 2, max depth 5 |
+| `/get file` | Send archived file; supports `category/file` |
+| `/preview file` | Image preview or text excerpt |
+| `/search keyword` | Search files; use `tag:<tag>` for tags |
+| `/search --recent [limit]` | Show recent files; default 10, max 30 |
+| `/tag file [tags...]` | View/add/remove tags; `-tag` removes |
+| `/note file [note]` | Show or set notes; use `-` to clear |
+| `/status` | Space, index, and runtime status summary |
+| `/add source [category]` | Import from any local/NAS path |
+| `/watch list|add|rm|run` | Manage watched directories and scan them |
+| `/dups [limit]` | Show duplicate file groups |
+| `/batch selector tag|untag|move ...` | Batch tag, untag, or move files |
+| `/export selector [name.zip]` | Export matching files as ZIP |
+| `/rm file` | Delete file; requires `/confirm` |
+| `/confirm` | Confirm pending delete |
+| `/cancel` | Cancel pending delete |
+| `/mv source target-path-or-new-name` | Move or rename a file |
+| `/repair` | Repair index |
+| `/repair vacuum` | Compact/analyze database |
 
 Selectors support `tag:<tag>`, `category:<category>`, `search:<keyword>`, and `path:<directory>`. When `allow_all_users` is enabled, ordinary users can only browse, search, preview, fetch, and view tags/notes inside `public_read_dir`.
 
@@ -131,7 +130,7 @@ All commands require `/` to avoid accidental triggers in normal chat.
 |----------|----------|
 | `files.db` deleted | Restart or `/repair` rebuilds from archived files |
 | `files.db` corrupt | `integrity_check != ok` backs it up as `files.db.broken.<timestamp>` and rebuilds |
-| File deleted externally | `/get`, `/search`, `/recent`, etc. lazily clean stale records |
+| File deleted externally | `/get`, `/search`, `/search --recent`, etc. lazily clean stale records |
 | Rebuild in progress | Read commands return "NAS索引重建中，请稍后再试" |
 
 Files live on disk. SQLite stores the index and tags.

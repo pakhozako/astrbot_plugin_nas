@@ -347,7 +347,7 @@ class NASPlugin(Star):
     def _multiple_match_message(self, results: list[dict], command: str) -> str:
         locations = "\n".join(f"  [{r['category']}] {r['name']}" for r in results[:8])
         suffix = "\n..." if len(results) > 8 else ""
-        return f"找到多个文件:\n{locations}{suffix}\n请使用 {command} 分类/文件名 或完整相对路径 指定"
+        return f"找到多个文件:\n{locations}{suffix}\n请使用 {command} category/file 或完整相对路径 指定"
 
     async def _resolve_indexed_file(
         self,
@@ -442,13 +442,13 @@ class NASPlugin(Star):
         if not value:
             return [], "选择器内容不能为空"
 
-        if key in {"tag", "标签"}:
+        if key == "tag":
             rows = await asyncio.to_thread(self.index.search_by_tag, value.lstrip("#").lower())
-        elif key in {"category", "cat", "分类"}:
+        elif key in {"category", "cat"}:
             rows = await asyncio.to_thread(self.index.find_by_category, value)
-        elif key in {"search", "s", "搜索"}:
+        elif key in {"search", "s"}:
             rows = await asyncio.to_thread(self.index.search, value)
-        elif key in {"path", "dir", "目录"}:
+        elif key in {"path", "dir"}:
             root = self._scope_root_for_event(event)
             p = Path(value).expanduser()
             target = p.resolve() if p.is_absolute() else (root / p).resolve()
@@ -774,7 +774,7 @@ class NASPlugin(Star):
 
     # ---------- ls ----------
 
-    @filter.command("ls", alias={"列表", "查看"}, priority=100)
+    @filter.command("ls", priority=100)
     async def cmd_ls(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event)
@@ -787,7 +787,7 @@ class NASPlugin(Star):
             return
 
         base_root = self._scope_root_for_event(event)
-        args = self._split_command_args(event, {"ls", "列表", "查看"}, maxsplit=1)
+        args = self._split_command_args(event, {"ls"}, maxsplit=1)
         if args:
             p = Path(self._strip_quotes(args[0]))
             target = p.resolve() if p.is_absolute() else (base_root / p).resolve()
@@ -833,7 +833,7 @@ class NASPlugin(Star):
 
     # ---------- get ----------
 
-    @filter.command("get", alias={"获取", "下载", "发送文件"}, priority=100)
+    @filter.command("get", priority=100)
     async def cmd_get(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event)
@@ -845,9 +845,9 @@ class NASPlugin(Star):
             yield event.plain_result(busy)
             return
 
-        args = self._split_command_args(event, {"get", "获取", "下载", "发送文件"}, maxsplit=1)
+        args = self._split_command_args(event, {"get"}, maxsplit=1)
         if len(args) < 1:
-            yield event.plain_result("用法: /get 文件名 或 /获取 文件名")
+            yield event.plain_result("用法: /get 文件名")
             return
 
         info, err = await self._resolve_indexed_file(args[0], "/get", event=event)
@@ -860,7 +860,7 @@ class NASPlugin(Star):
 
     # ---------- search ----------
 
-    @filter.command("search", alias={"搜索", "搜索文件"}, priority=100)
+    @filter.command("search", priority=100)
     async def cmd_search(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event)
@@ -872,16 +872,38 @@ class NASPlugin(Star):
             yield event.plain_result(busy)
             return
 
-        args = self._split_command_args(event, {"search", "搜索", "搜索文件"}, maxsplit=1)
+        args = self._split_command_args(event, {"search"}, maxsplit=1)
         if len(args) < 1:
-            yield event.plain_result("用法: /search 关键词 或 /搜索 关键词；标签搜索可用 tag:标签")
+            yield event.plain_result("用法: /search 关键词 | /search tag:标签 | /search --recent [数量]")
             return
 
         keyword = args[0].strip()
+        parts = keyword.split(maxsplit=1)
+        if parts and parts[0].lower() == "--recent":
+            limit = 10
+            if len(parts) > 1:
+                try:
+                    limit = max(1, min(30, int(parts[1].strip())))
+                except ValueError:
+                    yield event.plain_result("用法: /search --recent [数量]")
+                    return
+
+            results = await asyncio.to_thread(self.index.recent, limit)
+            valid = await self._valid_existing_rows(results, event)
+            if not valid:
+                yield event.plain_result("暂无文件记录")
+                return
+
+            lines = [f"最近文件 ({len(valid)}个):\n"]
+            for r in valid:
+                lines.append(f"  [{r['category']}] {r['name']} ({format_size(r['size'])})")
+            yield event.plain_result("\n".join(lines))
+            return
+
         if keyword.lower().startswith("tag:"):
             tag = keyword[4:].strip().lower()
             if not tag:
-                yield event.plain_result("用法: /search tag:标签 或 /搜索 tag:标签")
+                yield event.plain_result("用法: /search tag:标签")
                 return
             results = await asyncio.to_thread(self.index.search_by_tag, tag)
         else:
@@ -902,44 +924,9 @@ class NASPlugin(Star):
             lines.append(f"  [{r['category']}] {r['name']} ({format_size(r['size'])}){tag_text}{note_text}")
         yield event.plain_result("\n".join(lines))
 
-    # ---------- recent ----------
-
-    @filter.command("recent", alias={"最近", "最近文件"}, priority=100)
-    async def cmd_recent(self, event: AstrMessageEvent):
-        self._stop_event(event)
-        err = self._access_error(event)
-        if err:
-            yield event.plain_result(err)
-            return
-        busy = self._rebuild_busy_message()
-        if busy:
-            yield event.plain_result(busy)
-            return
-
-        args = self._split_command_args(event, {"recent", "最近", "最近文件"}, maxsplit=1)
-        limit = 10
-        if args:
-            try:
-                limit = max(1, min(30, int(args[0].strip())))
-            except ValueError:
-                yield event.plain_result("用法: /recent [数量]")
-                return
-
-        results = await asyncio.to_thread(self.index.recent, limit)
-        valid = await self._valid_existing_rows(results, event)
-
-        if not valid:
-            yield event.plain_result("暂无文件记录")
-            return
-
-        lines = [f"最近文件 ({len(valid)}个):\n"]
-        for r in valid:
-            lines.append(f"  [{r['category']}] {r['name']} ({format_size(r['size'])})")
-        yield event.plain_result("\n".join(lines))
-
     # ---------- tree ----------
 
-    @filter.command("tree", alias={"目录树"}, priority=100)
+    @filter.command("tree", priority=100)
     async def cmd_tree(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event)
@@ -947,7 +934,7 @@ class NASPlugin(Star):
             yield event.plain_result(err)
             return
 
-        args = self._parse_command_args(event, {"tree", "目录树"})
+        args = self._parse_command_args(event, {"tree"})
         base_root = self._scope_root_for_event(event)
         target = base_root
         max_depth = 2
@@ -958,7 +945,7 @@ class NASPlugin(Star):
             try:
                 max_depth = max(1, min(5, int(args[1].strip())))
             except ValueError:
-                yield event.plain_result("用法: /tree [路径] [深度] 或 /目录树 [路径] [深度]")
+                yield event.plain_result("用法: /tree [路径] [深度]")
                 return
 
         if not self._path_in_event_scope(event, target):
@@ -1009,7 +996,7 @@ class NASPlugin(Star):
 
     # ---------- rm ----------
 
-    @filter.command("rm", alias={"删除", "删除文件"}, priority=100)
+    @filter.command("rm", priority=100)
     async def cmd_rm(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, admin=True, action="删除文件")
@@ -1017,9 +1004,9 @@ class NASPlugin(Star):
             yield event.plain_result(err)
             return
 
-        args = self._split_command_args(event, {"rm", "删除", "删除文件"}, maxsplit=1)
+        args = self._split_command_args(event, {"rm"}, maxsplit=1)
         if len(args) < 1:
-            yield event.plain_result("用法: /rm 文件名 或 /删除 文件名")
+            yield event.plain_result("用法: /rm 文件名")
             return
 
         self._cleanup_pending()
@@ -1040,10 +1027,10 @@ class NASPlugin(Star):
         }
         yield event.plain_result(
             f"确认删除 [{info['category']}] {target.name} ({format_size(info['size'])})？\n"
-            f"{self.confirm_ttl}秒内回复「/确认删除」执行，「/取消」放弃"
+            f"{self.confirm_ttl}秒内回复「/confirm」执行，「/cancel」放弃"
         )
 
-    @filter.command("确认删除", priority=100)
+    @filter.command("confirm", priority=100)
     async def cmd_confirm_delete(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, admin=True, action="删除文件")
@@ -1082,7 +1069,7 @@ class NASPlugin(Star):
         self._log_info(f"[NAS] DELETE | {uid} | {waiting['category']}/{waiting['name']}")
         yield event.plain_result(f"已删除: {waiting['name']}")
 
-    @filter.command("取消", priority=100)
+    @filter.command("cancel", priority=100)
     async def cmd_cancel(self, event: AstrMessageEvent):
         self._stop_event(event)
         if self._delete_pending.pop(str(event.get_sender_id()), None):
@@ -1090,7 +1077,7 @@ class NASPlugin(Star):
 
     # ---------- mv ----------
 
-    @filter.command("mv", alias={"移动", "移动文件"}, priority=100)
+    @filter.command("mv", priority=100)
     async def cmd_mv(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, admin=True, action="移动文件")
@@ -1098,9 +1085,9 @@ class NASPlugin(Star):
             yield event.plain_result(err)
             return
 
-        args = self._split_command_args(event, {"mv", "移动", "移动文件"}, maxsplit=1)
+        args = self._split_command_args(event, {"mv"}, maxsplit=1)
         if len(args) < 2:
-            yield event.plain_result("用法: /mv 源文件 目标路径 或 /移动 源文件 目标路径")
+            yield event.plain_result("用法: /mv 源文件 目标路径或新文件名")
             return
 
         info, err = await self._resolve_indexed_file(args[0], "/mv", event=event)
@@ -1109,7 +1096,23 @@ class NASPlugin(Star):
             return
         src = Path(info["path"]).resolve()
         dst_arg = self._strip_quotes(args[1])
-        dst = Path(dst_arg).resolve() if Path(dst_arg).is_absolute() else (self.root / dst_arg).resolve()
+        if not dst_arg:
+            yield event.plain_result("目标不能为空")
+            return
+        raw_dst = Path(dst_arg).expanduser()
+        if raw_dst.is_absolute():
+            dst = raw_dst.resolve()
+        elif "/" not in dst_arg and "\\" not in dst_arg and Path(dst_arg).name == dst_arg:
+            if dst_arg in {".", ".."}:
+                yield event.plain_result("目标文件名不合法")
+                return
+            root_candidate = (self.root / dst_arg).resolve()
+            if root_candidate.exists() and root_candidate.is_dir():
+                dst = root_candidate
+            else:
+                dst = src.with_name(dst_arg).resolve()
+        else:
+            dst = (self.root / dst_arg).resolve()
 
         if not self._safe_path(src) or not self._safe_path(dst):
             yield event.plain_result("路径不合法")
@@ -1141,57 +1144,9 @@ class NASPlugin(Star):
             logger.error(f"[NAS] 移动失败: {e}")
             yield event.plain_result(f"移动失败: {e}")
 
-    # ---------- rename ----------
-
-    @filter.command("rename", alias={"重命名"}, priority=100)
-    async def cmd_rename(self, event: AstrMessageEvent):
-        self._stop_event(event)
-        err = self._access_error(event, admin=True, action="重命名文件")
-        if err:
-            yield event.plain_result(err)
-            return
-
-        args = self._split_command_args(event, {"rename", "重命名"}, maxsplit=1)
-        if len(args) < 2:
-            yield event.plain_result("用法: /rename 源文件 新名称 或 /重命名 源文件 新名称")
-            return
-
-        raw_name = self._strip_quotes(args[1])
-        if not raw_name or "/" in raw_name or "\\" in raw_name or Path(raw_name).name != raw_name:
-            yield event.plain_result("新名称不能包含路径")
-            return
-
-        info, err = await self._resolve_indexed_file(args[0], "/rename", event=event)
-        if err:
-            yield event.plain_result(err)
-            return
-        src = Path(info["path"]).resolve()
-        dst = src.with_name(raw_name).resolve()
-        if not self._safe_path(dst):
-            yield event.plain_result("新名称不合法")
-            return
-        if dst.exists():
-            yield event.plain_result(f"目标已存在: {raw_name}")
-            return
-
-        try:
-            await asyncio.to_thread(src.rename, dst)
-            fp = await asyncio.to_thread(file_fingerprint, str(dst))
-            h = await asyncio.to_thread(file_hash, str(dst))
-            new_cat = FileClassifier.get_category(dst.name)
-            await asyncio.to_thread(
-                self.index.move, str(src), h, str(dst), dst.name,
-                fp[0], fp[1], new_cat
-            )
-            self._log_info(f"[NAS] RENAME | {event.get_sender_id()} | {src.name} -> {dst.name}")
-            yield event.plain_result(f"已重命名为 {dst.name}")
-        except Exception as e:
-            logger.error(f"[NAS] 重命名失败: {e}")
-            yield event.plain_result(f"重命名失败: {e}")
-
     # ---------- path import ----------
 
-    @filter.command("add", alias={"addpath", "添加", "路径添加"}, priority=100)
+    @filter.command("add", priority=100)
     async def cmd_add_path(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, admin=True, action="从路径添加文件")
@@ -1199,9 +1154,9 @@ class NASPlugin(Star):
             yield event.plain_result(err)
             return
 
-        args = self._parse_command_args(event, {"add", "addpath", "添加", "路径添加"})
+        args = self._parse_command_args(event, {"add"})
         if len(args) < 1:
-            yield event.plain_result("用法: /add 源路径 [分类] 或 /添加 源路径 [分类]\n源路径可以是任意本机路径或 NAS 挂载路径")
+            yield event.plain_result("用法: /add 源路径 [分类]\n源路径可以是任意本机路径或 NAS 挂载路径")
             return
         raw_source = Path(self._strip_quotes(args[0])).expanduser()
         forced_category = self._strip_quotes(args[1]) if len(args) > 1 else None
@@ -1246,7 +1201,7 @@ class NASPlugin(Star):
 
     # ---------- watch ----------
 
-    @filter.command("watch", alias={"监控"}, priority=100)
+    @filter.command("watch", priority=100)
     async def cmd_watch(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, admin=True, action="管理监控目录")
@@ -1254,9 +1209,9 @@ class NASPlugin(Star):
             yield event.plain_result(err)
             return
 
-        args = self._parse_command_args(event, {"watch", "监控"})
+        args = self._parse_command_args(event, {"watch"})
         sub = args[0].lower() if args else "list"
-        if sub in {"list", "ls", "列表"}:
+        if sub in {"list", "ls"}:
             watches = await asyncio.to_thread(self.index.list_watches)
             if not watches:
                 yield event.plain_result("暂无监控目录")
@@ -1269,9 +1224,9 @@ class NASPlugin(Star):
             yield event.plain_result("\n".join(lines))
             return
 
-        if sub in {"add", "添加"}:
+        if sub == "add":
             if len(args) < 2:
-                yield event.plain_result("用法: /watch add 目录 [分类] 或 /监控 add 目录 [分类]")
+                yield event.plain_result("用法: /watch add 目录 [分类]")
                 return
             raw_source = Path(self._strip_quotes(args[1])).expanduser()
             if raw_source.is_symlink():
@@ -1289,9 +1244,9 @@ class NASPlugin(Star):
             yield event.plain_result(f"已添加监控目录: {source}" + (f" -> {category}" if category else ""))
             return
 
-        if sub in {"rm", "remove", "del", "删除"}:
+        if sub == "rm":
             if len(args) < 2:
-                yield event.plain_result("用法: /watch rm 目录 或 /监控 删除 目录")
+                yield event.plain_result("用法: /watch rm 目录")
                 return
             target = Path(self._strip_quotes(args[1])).expanduser()
             path = target.resolve()
@@ -1299,7 +1254,7 @@ class NASPlugin(Star):
             yield event.plain_result("已移除监控目录" if removed else "未找到该监控目录")
             return
 
-        if sub in {"run", "scan", "扫描", "执行"}:
+        if sub == "run":
             yield event.plain_result("正在扫描监控目录...")
             result = await self._run_watch_scan()
             self._last_watch_run = time.time()
@@ -1314,20 +1269,20 @@ class NASPlugin(Star):
             )
             return
 
-        yield event.plain_result("用法: /watch list|add|rm|run 或 /监控 列表|添加|删除|扫描")
+        yield event.plain_result("用法: /watch list|add|rm|run")
 
     # ---------- tag ----------
 
-    @filter.command("tag", alias={"标签", "打标签"}, priority=100)
+    @filter.command("tag", priority=100)
     async def cmd_tag(self, event: AstrMessageEvent):
         self._stop_event(event)
-        err = self._access_error(event, admin=True, action="修改标签")
+        args = self._split_command_args(event, {"tag"}, maxsplit=1)
+        if len(args) < 1:
+            yield event.plain_result("用法: /tag 文件名 [标签...]\n标签前加 - 表示移除，例如 /tag a.txt work -temp")
+            return
+        err = self._access_error(event, admin=len(args) >= 2, action="修改标签")
         if err:
             yield event.plain_result(err)
-            return
-        args = self._split_command_args(event, {"tag", "标签", "打标签"}, maxsplit=1)
-        if len(args) < 1:
-            yield event.plain_result("用法: /tag 文件名 [标签...] 或 /标签 文件名 [标签...]\n标签前加 - 表示移除，例如 /标签 a.txt 工作 -临时")
             return
         info, err = await self._resolve_indexed_file(args[0], "/tag", event=event)
         if err:
@@ -1362,51 +1317,14 @@ class NASPlugin(Star):
             parts.append("移除 " + " ".join(f"#{t}" for t in removed))
         yield event.plain_result(f"{info['name']} 标签已更新: " + "；".join(parts))
 
-    @filter.command("untag", alias={"移除标签"}, priority=100)
-    async def cmd_untag(self, event: AstrMessageEvent):
-        self._stop_event(event)
-        err = self._access_error(event, admin=True, action="修改标签")
-        if err:
-            yield event.plain_result(err)
-            return
-        args = self._split_command_args(event, {"untag", "移除标签"}, maxsplit=1)
-        if len(args) < 2:
-            yield event.plain_result("用法: /untag 文件名 标签1 标签2 ... 或 /移除标签 文件名 标签1")
-            return
-        info, err = await self._resolve_indexed_file(args[0], "/untag", event=event)
-        if err:
-            yield event.plain_result(err)
-            return
-        tags = [t.strip().lstrip("#") for t in args[1].replace("，", " ").split()]
-        removed = await asyncio.to_thread(self.index.remove_tags, info["path"], tags)
-        yield event.plain_result(f"已从 {info['name']} 移除标签: " + " ".join(f"#{t}" for t in removed))
-
-    @filter.command("tags", alias={"查看标签"}, priority=100)
-    async def cmd_tags(self, event: AstrMessageEvent):
-        self._stop_event(event)
-        err = self._access_error(event)
-        if err:
-            yield event.plain_result(err)
-            return
-        args = self._split_command_args(event, {"tags", "查看标签"}, maxsplit=1)
-        if len(args) < 1:
-            yield event.plain_result("用法: /tags 文件名 或 /查看标签 文件名")
-            return
-        info, err = await self._resolve_indexed_file(args[0], "/tags", event=event)
-        if err:
-            yield event.plain_result(err)
-            return
-        tags = await asyncio.to_thread(self.index.list_tags, info["path"])
-        yield event.plain_result(f"{info['name']} 标签: " + (" ".join(f"#{t}" for t in tags) if tags else "暂无"))
-
     # ---------- note ----------
 
-    @filter.command("note", alias={"备注"}, priority=100)
+    @filter.command("note", priority=100)
     async def cmd_note(self, event: AstrMessageEvent):
         self._stop_event(event)
-        args = self._split_command_args(event, {"note", "备注"}, maxsplit=1)
+        args = self._split_command_args(event, {"note"}, maxsplit=1)
         if len(args) < 1:
-            yield event.plain_result("用法: /note 文件 [备注内容] 或 /备注 文件 [备注内容]；内容为 - 表示清空")
+            yield event.plain_result("用法: /note 文件 [备注内容]；内容为 - 表示清空")
             return
 
         if len(args) >= 2:
@@ -1439,16 +1357,16 @@ class NASPlugin(Star):
 
     # ---------- preview ----------
 
-    @filter.command("preview", alias={"预览"}, priority=100)
+    @filter.command("preview", priority=100)
     async def cmd_preview(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
             return
-        args = self._split_command_args(event, {"preview", "预览"}, maxsplit=1)
+        args = self._split_command_args(event, {"preview"}, maxsplit=1)
         if len(args) < 1:
-            yield event.plain_result("用法: /preview 文件名 或 /预览 文件名")
+            yield event.plain_result("用法: /preview 文件名")
             return
         info, err = await self._resolve_indexed_file(args[0], "/preview", event=event)
         if err:
@@ -1481,20 +1399,20 @@ class NASPlugin(Star):
 
     # ---------- dups / batch / export ----------
 
-    @filter.command("dups", alias={"重复"}, priority=100)
+    @filter.command("dups", priority=100)
     async def cmd_dups(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, admin=True, action="查看重复文件")
         if err:
             yield event.plain_result(err)
             return
-        args = self._split_command_args(event, {"dups", "重复"}, maxsplit=1)
+        args = self._split_command_args(event, {"dups"}, maxsplit=1)
         limit = 10
         if args:
             try:
                 limit = max(1, min(50, int(args[0].strip())))
             except ValueError:
-                yield event.plain_result("用法: /dups [数量] 或 /重复 [数量]")
+                yield event.plain_result("用法: /dups [数量]")
                 return
 
         groups = await asyncio.to_thread(self.index.duplicate_groups, limit)
@@ -1519,7 +1437,7 @@ class NASPlugin(Star):
             return
         yield event.plain_result("\n".join(lines))
 
-    @filter.command("batch", alias={"批量"}, priority=100)
+    @filter.command("batch", priority=100)
     async def cmd_batch(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, admin=True, action="执行批量操作")
@@ -1527,7 +1445,7 @@ class NASPlugin(Star):
             yield event.plain_result(err)
             return
 
-        args = self._parse_command_args(event, {"batch", "批量"})
+        args = self._parse_command_args(event, {"batch"})
         if len(args) < 2:
             yield event.plain_result(
                 "用法:\n"
@@ -1551,7 +1469,7 @@ class NASPlugin(Star):
         truncated = len(rows) > self.batch_max_files
         rows = rows[: self.batch_max_files]
 
-        if op in {"tag", "addtag", "标签"}:
+        if op in {"tag", "addtag"}:
             tags = [
                 t.strip().lstrip("#")
                 for t in args[2:]
@@ -1568,7 +1486,7 @@ class NASPlugin(Star):
             )
             return
 
-        if op in {"untag", "rmtag", "移除标签"}:
+        if op in {"untag", "rmtag"}:
             tags = [
                 t.strip().lstrip("#")
                 for t in args[2:]
@@ -1585,9 +1503,9 @@ class NASPlugin(Star):
             )
             return
 
-        if op in {"move", "mv", "移动"}:
+        if op in {"move", "mv"}:
             if len(args) < 3:
-                yield event.plain_result("用法: /batch 选择器 move 目标目录 或 /批量 选择器 移动 目标目录")
+                yield event.plain_result("用法: /batch 选择器 move 目标目录")
                 return
             raw_target = Path(self._strip_quotes(args[2])).expanduser()
             target_dir = raw_target.resolve() if raw_target.is_absolute() else (self.root / raw_target).resolve()
@@ -1613,7 +1531,7 @@ class NASPlugin(Star):
 
         yield event.plain_result("不支持的批量操作，可用: tag / untag / move")
 
-    @filter.command("export", alias={"导出"}, priority=100)
+    @filter.command("export", priority=100)
     async def cmd_export(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, admin=True, action="导出文件")
@@ -1621,9 +1539,9 @@ class NASPlugin(Star):
             yield event.plain_result(err)
             return
 
-        args = self._parse_command_args(event, {"export", "导出"})
+        args = self._parse_command_args(event, {"export"})
         if len(args) < 1:
-            yield event.plain_result("用法: /export 选择器 [文件名.zip] 或 /导出 选择器 [文件名.zip]")
+            yield event.plain_result("用法: /export 选择器 [文件名.zip]")
             return
         rows, err = await self._select_files(args[0])
         if err:
@@ -1648,10 +1566,10 @@ class NASPlugin(Star):
         yield event.chain_result([File(name=zip_path.name, file=str(zip_path))])
         yield event.plain_result(f"已导出: {zip_path.name} ({format_size(size)})")
 
-    # ---------- du / health / repair ----------
+    # ---------- status / repair ----------
 
-    @filter.command("status", alias={"du", "状态", "空间"}, priority=100)
-    async def cmd_du(self, event: AstrMessageEvent):
+    @filter.command("status", priority=100)
+    async def cmd_status(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, public_read=False)
         if err:
@@ -1674,6 +1592,7 @@ class NASPlugin(Star):
             f"  剩余: {format_size(usage.free)}",
             f"  数据库: {format_size(db_size)}",
             f"  索引状态: {status}",
+            "  版本: v2.3.0",
             f"  后台检查: {self.auto_repair_interval} 分钟" if self.auto_repair_interval > 0 else "  后台检查: 关闭",
             f"  监控导入: {self.watch_interval} 分钟" if self.watch_interval > 0 else "  监控导入: 关闭",
             f"  公开目录: {self.public_read_root.relative_to(self.root)}" if self.allow_all_users else "  公开目录: 关闭",
@@ -1686,34 +1605,28 @@ class NASPlugin(Star):
 
         yield event.plain_result("\n".join(lines))
 
-    @filter.command("health", priority=100)
-    async def cmd_health(self, event: AstrMessageEvent):
-        self._stop_event(event)
-        err = self._access_error(event, public_read=False)
-        if err:
-            yield event.plain_result(err)
-            return
-
-        stats = await asyncio.to_thread(self.index.get_stats)
-        db_size = await asyncio.to_thread(self.index.get_db_size)
-        status = self._rebuild_status_text()
-
-        yield event.plain_result(
-            f"NAS 状态\n\n"
-            f"文件数: {stats['total_count']}\n"
-            f"数据库大小: {format_size(db_size)}\n"
-            f"NAS占用: {format_size(stats['total_size'])}\n"
-            f"重建状态: {status}\n"
-            f"版本: v2.3.0"
-        )
-
-    @filter.command("repair", alias={"修复"}, priority=100)
+    @filter.command("repair", priority=100)
     async def cmd_repair(self, event: AstrMessageEvent):
         self._stop_event(event)
         err = self._access_error(event, admin=True, action="修复索引")
         if err:
             yield event.plain_result(err)
             return
+        args = self._parse_command_args(event, {"repair"})
+        if args:
+            sub = args[0].lower()
+            if sub == "vacuum":
+                busy = self._rebuild_busy_message()
+                if busy:
+                    yield event.plain_result(busy)
+                    return
+                yield event.plain_result("正在整理数据库...")
+                await asyncio.to_thread(self.index.vacuum)
+                yield event.plain_result("数据库整理完成 (VACUUM + ANALYZE)")
+                return
+            yield event.plain_result("用法: /repair [vacuum]")
+            return
+
         token = self._begin_rebuild("手动修复", allow_stale=True)
         if token is None:
             busy = self._rebuild_busy_message()
@@ -1738,7 +1651,7 @@ class NASPlugin(Star):
 
     # ---------- nas ----------
 
-    @filter.command("nashelp", alias={"nas帮助"}, priority=100)
+    @filter.command("nashelp", priority=100)
     async def cmd_nas(self, event: AstrMessageEvent):
         self._stop_event(event)
         yield event.plain_result(self._nas_help_text())
@@ -1747,36 +1660,22 @@ class NASPlugin(Star):
         return (
             "NAS 助手 v2.3\n\n"
             "常用:\n"
-            "/ls | /列表 [路径]              - 查看目录\n"
-            "/get | /获取 文件               - 发送文件\n"
-            "/preview | /预览 文件           - 预览图片/文本\n"
-            "/search | /搜索 关键词|tag:标签  - 搜索文件/备注\n"
-            "/recent | /最近 [数量]          - 最近文件\n"
-            "/tags | /查看标签 文件          - 查看标签\n"
-            "/note | /备注 文件 [内容]       - 查看/设置备注\n"
-            "/status | /状态                 - 空间与状态\n\n"
+            "/ls [路径]                         - 查看目录\n"
+            "/tree [路径] [深度]                - 查看目录树\n"
+            "/get 文件                          - 发送文件\n"
+            "/preview 文件                      - 预览图片和文本\n"
+            "/search 关键词|tag:标签|--recent   - 搜索文件、标签或最近文件\n"
+            "/tag 文件 [标签...]                - 查看、添加、移除标签，-标签 表示移除\n"
+            "/note 文件 [内容]                  - 查看、设置备注，- 表示清空\n"
+            "/status                            - 空间、索引与运行状态\n\n"
             "管理:\n"
-            "/add | /添加 源路径 [分类]     - 从任意本机/NAS路径导入\n"
-            "/watch | /监控 list|add|rm|run  - 监控目录\n"
-            "/dups | /重复 [数量]            - 重复文件审计\n"
-            "/batch | /批量 选择器 操作      - 批量标签/移动\n"
-            "/export | /导出 选择器 [zip]    - 导出ZIP\n"
-            "/tag | /标签 文件 [标签...]    - 查看/添加/移除标签，-标签 表示移除\n"
-            "/rm | /删除 文件               - 删除文件，需确认\n"
-            "/mv | /移动 源 目标            - 移动文件\n"
-            "/rename | /重命名 源 新名称    - 重命名文件\n"
-            "/repair | /修复                - 修复索引"
+            "/add 源路径 [分类]                 - 从任意本机/NAS路径导入\n"
+            "/watch list|add|rm|run             - 管理监控目录\n"
+            "/dups [数量]                       - 重复文件审计\n"
+            "/batch 选择器 tag|untag|move ...   - 批量标签或移动\n"
+            "/export 选择器 [zip]               - 导出ZIP\n"
+            "/rm 文件                           - 删除文件，需 /confirm\n"
+            "/confirm | /cancel                 - 确认或取消删除\n"
+            "/mv 源 目标路径或新文件名          - 移动或重命名文件\n"
+            "/repair [vacuum]                   - 修复索引或整理数据库"
         )
-
-    # ---------- vacuum ----------
-
-    @filter.command("vacuum", alias={"整理"}, priority=100)
-    async def cmd_vacuum(self, event: AstrMessageEvent):
-        self._stop_event(event)
-        err = self._access_error(event, admin=True, action="整理数据库")
-        if err:
-            yield event.plain_result(err)
-            return
-        yield event.plain_result("正在整理数据库...")
-        await asyncio.to_thread(self.index.vacuum)
-        yield event.plain_result("数据库整理完成 (VACUUM + ANALYZE)")
