@@ -6,6 +6,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from .constants import INTERNAL_DIRS, INTERNAL_FILES
 from .utils import file_hash, FileClassifier
 
 
@@ -138,8 +139,6 @@ class FileIndex:
 
     @staticmethod
     def _iter_category_files(root: Path):
-        internal_dirs = {".previews", ".exports"}
-        internal_files = {"files.db", "files.db-wal", "files.db-shm"}
         known_categories = set(FileClassifier.get_all_categories())
         stack = [root]
         while stack:
@@ -155,12 +154,12 @@ class FileIndex:
                     rel = entry.relative_to(root)
                 except ValueError:
                     continue
-                if rel.parts and rel.parts[0] in internal_dirs:
+                if rel.parts and rel.parts[0] in INTERNAL_DIRS:
                     continue
                 if entry.is_dir():
                     stack.append(entry)
                 elif entry.is_file():
-                    if rel.parent == Path(".") and entry.name in internal_files:
+                    if rel.parent == Path(".") and entry.name in INTERNAL_FILES:
                         continue
                     first = rel.parts[0] if rel.parts else ""
                     cat = first if first in known_categories else FileClassifier.get_category(entry.name)

@@ -26,6 +26,7 @@ class NASSettings:
     public_rate_limit_per_minute: int
     rebuild_busy_timeout_seconds: int
     public_read_dir: str
+    seven_zip_path: str
     categories_raw: str
 
     @classmethod
@@ -51,5 +52,6 @@ class NASSettings:
             public_rate_limit_per_minute=int(cfg.get("public_rate_limit_per_minute", 10)),
             rebuild_busy_timeout_seconds=int(cfg.get("rebuild_busy_timeout_seconds", 600)),
             public_read_dir=str(cfg.get("public_read_dir") or "Public"),
+            seven_zip_path=str(cfg.get("seven_zip_path") or r"D:\7-Zip\7z.exe"),
             categories_raw=str(cfg.get("categories", "") or ""),
         )

@@ -8,7 +8,6 @@ import json
 import os
 import shutil
 import time
-import zipfile
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -17,21 +16,22 @@ from astrbot.api.message_components import File, Image, Video
 from astrbot.api.star import Context, Star, register
 
 from .command_args import (
-    command_payload,
-    message_text,
-    parse_args,
     parse_command_args,
     split_command_args,
     strip_quotes,
 )
+from .access_control import AccessControlMixin
+from .constants import INTERNAL_DIRS, PLUGIN_VERSION
 from .config import NASSettings
+from .file_services import FileServiceMixin
+from .help_text import nas_help_text
 from .utils import file_hash, file_fingerprint, format_size, FileClassifier
 from .index import FileIndex
 from .runtime_state import RateLimiter, RebuildState
 
 
-@register("NAS 助手", "pakhozako", "私聊文件自动归档到本地磁盘/NAS", "v2.3.0")
-class NASPlugin(Star):
+@register("NAS 助手", "pakhozako", "私聊文件自动归档到本地磁盘/NAS", PLUGIN_VERSION)
+class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -52,6 +52,7 @@ class NASPlugin(Star):
         self.watch_interval = settings.watch_interval_minutes
         self.export_max_files = settings.export_max_files
         self.batch_max_files = settings.batch_max_files
+        self.seven_zip_path = settings.seven_zip_path
         self.public_read_dir = settings.public_read_dir
         self.public_read_root = self._resolve_public_root(self.public_read_dir)
 
@@ -94,133 +95,12 @@ class NASPlugin(Star):
             FileClassifier.reset_categories()
             logger.warning(f"[NAS] 自定义分类规则无效，使用默认分类: {e}")
 
-    @staticmethod
-    def _safe_dir_name(name: str) -> bool:
-        clean = name.strip()
-        return (
-            bool(clean)
-            and clean == name
-            and Path(clean).name == clean
-            and "/" not in clean
-            and "\\" not in clean
-            and clean not in {".", ".."}
-        )
-
     def _init_dirs(self):
         for cat in FileClassifier.get_all_categories():
             (self.root / cat).mkdir(parents=True, exist_ok=True)
-        (self.root / ".previews").mkdir(parents=True, exist_ok=True)
-        (self.root / ".exports").mkdir(parents=True, exist_ok=True)
+        for directory in INTERNAL_DIRS:
+            (self.root / directory).mkdir(parents=True, exist_ok=True)
         self.public_read_root.mkdir(parents=True, exist_ok=True)
-
-    # ---------- 安全与权限 ----------
-
-    def _is_allowed(self, uid: str) -> bool:
-        return self._is_admin(uid)
-
-    def _is_admin(self, uid: str) -> bool:
-        return str(uid) in self.admins
-
-    def _is_public_user(self, uid: str) -> bool:
-        return self.allow_all_users and not self._is_admin(uid)
-
-    @staticmethod
-    def _stop_event(event: AstrMessageEvent):
-        try:
-            event.stop_event()
-        except Exception:
-            pass
-
-    def _is_group_message(self, event: AstrMessageEvent) -> bool:
-        obj = getattr(event, "message_obj", None)
-        group_id = getattr(obj, "group_id", None)
-        if group_id:
-            return True
-        msg_type = getattr(obj, "type", None)
-        return "group" in str(msg_type).lower()
-
-    def _access_error(
-        self,
-        event: AstrMessageEvent,
-        admin: bool = False,
-        action: str = "执行此命令",
-        public_read: bool = True,
-    ) -> str | None:
-        if self._is_group_message(event) and not self.allow_group_commands:
-            return "群聊命令未启用，请在私聊中使用 NAS 助手"
-        uid = str(event.get_sender_id())
-        if admin:
-            if not self._is_admin(uid):
-                return f"没有权限{action}"
-            return None
-        if self._is_admin(uid):
-            return None
-        if public_read and self._is_public_user(uid):
-            wait = self._public_rate_wait(uid)
-            if wait > 0:
-                return f"请求过快，请 {wait} 秒后再试"
-            return None
-        return "没有权限使用 NAS 助手"
-
-    def _public_rate_wait(self, uid: str) -> int:
-        return self._public_rate_limiter.wait_seconds(uid)
-
-    def _resolve_public_root(self, raw: str) -> Path:
-        raw = self._strip_quotes(str(raw or "Public")).strip() or "Public"
-        candidate = Path(raw).expanduser()
-        path = candidate.resolve() if candidate.is_absolute() else (self.root / candidate).resolve()
-        try:
-            path.relative_to(self.root)
-            return path
-        except ValueError:
-            logger.warning("[NAS] public_read_dir 不在 save_root 内，已回退到 Public")
-            return (self.root / "Public").resolve()
-
-    def _safe_path(self, path: Path) -> bool:
-        try:
-            path.resolve().relative_to(self.root)
-            return True
-        except ValueError:
-            return False
-
-    @staticmethod
-    def _path_under(path: Path, root: Path) -> bool:
-        try:
-            path.resolve().relative_to(root.resolve())
-            return True
-        except ValueError:
-            return False
-
-    def _scope_root_for_event(self, event: AstrMessageEvent | None) -> Path:
-        if event and self._is_public_user(str(event.get_sender_id())):
-            return self.public_read_root
-        return self.root
-
-    def _path_in_event_scope(self, event: AstrMessageEvent | None, path: Path) -> bool:
-        if not self._safe_path(path):
-            return False
-        if event and self._is_public_user(str(event.get_sender_id())):
-            return self._path_under(path, self.public_read_root)
-        return True
-
-    def _display_path_for_event(self, event: AstrMessageEvent | None, path: Path) -> str:
-        root = self._scope_root_for_event(event)
-        try:
-            rel = path.resolve().relative_to(root)
-            return str(rel) if str(rel) != "." else "/"
-        except ValueError:
-            try:
-                rel = path.resolve().relative_to(self.root)
-                return str(rel) if str(rel) != "." else "/"
-            except ValueError:
-                return path.name
-
-    def _filter_event_scope(self, event: AstrMessageEvent | None, rows: list[dict]) -> list[dict]:
-        visible = []
-        for row in rows:
-            if self._path_in_event_scope(event, Path(row["path"])):
-                visible.append(row)
-        return visible
 
     def _cleanup_pending(self):
         now = time.time()
@@ -312,15 +192,6 @@ class NASPlugin(Star):
 
     # ---------- 路径与文件工具 ----------
 
-    def _parse_args(self, text: str) -> list[str]:
-        return parse_args(text)
-
-    def _message_text(self, event: AstrMessageEvent) -> str:
-        return message_text(event)
-
-    def _command_payload(self, event: AstrMessageEvent, commands: set[str]) -> str:
-        return command_payload(event, commands)
-
     def _split_command_args(self, event: AstrMessageEvent, commands: set[str], maxsplit: int = -1) -> list[str]:
         return split_command_args(event, commands, maxsplit)
 
@@ -331,404 +202,6 @@ class NASPlugin(Star):
     def _strip_quotes(text: str) -> str:
         return strip_quotes(text)
 
-    def _info_from_path(self, path: Path) -> dict:
-        st = path.stat()
-        return {
-            "path": str(path),
-            "name": path.name,
-            "size": st.st_size,
-            "category": FileClassifier.get_category(path.name),
-            "created_at": int(st.st_mtime),
-            "owner": "",
-            "source_path": "",
-            "note": "",
-        }
-
-    def _multiple_match_message(self, results: list[dict], command: str) -> str:
-        locations = "\n".join(f"  [{r['category']}] {r['name']}" for r in results[:8])
-        suffix = "\n..." if len(results) > 8 else ""
-        return f"找到多个文件:\n{locations}{suffix}\n请使用 {command} category/file 或完整相对路径 指定"
-
-    async def _resolve_indexed_file(
-        self,
-        query: str,
-        command: str,
-        allow_search: bool = True,
-        event: AstrMessageEvent | None = None,
-    ) -> tuple[dict | None, str | None]:
-        name = self._strip_quotes(query)
-        if not name:
-            return None, "文件名不能为空"
-
-        base_root = self._scope_root_for_event(event)
-        if os.path.isabs(name):
-            file_path = Path(name).resolve()
-            if not self._safe_path(file_path):
-                return None, "路径不在允许范围内"
-            if not self._path_in_event_scope(event, file_path):
-                return None, "文件不在可访问目录内"
-            if not file_path.exists():
-                return None, f"文件不存在: {name}"
-            if not file_path.is_file():
-                return None, f"不是文件: {name}"
-            info = await asyncio.to_thread(self.index.find_by_path, str(file_path))
-            return info or self._info_from_path(file_path), None
-
-        rel_path = (base_root / name).resolve()
-        if ("/" in name or "\\" in name) and self._safe_path(rel_path) and self._path_in_event_scope(event, rel_path) and rel_path.exists():
-            if not rel_path.is_file():
-                return None, f"不是文件: {name}"
-            info = await asyncio.to_thread(self.index.find_by_path, str(rel_path))
-            return info or self._info_from_path(rel_path), None
-
-        normalized = name.replace("\\", "/")
-        if "/" in normalized:
-            cat_part, file_part = normalized.split("/", 1)
-            results = await asyncio.to_thread(self.index.find_by_name, file_part.strip())
-            results = [
-                r for r in results
-                if r["category"] == cat_part.strip()
-                or Path(r["path"]).resolve() == (base_root / normalized).resolve()
-            ]
-        else:
-            results = await asyncio.to_thread(self.index.find_by_name, name)
-            if not results and allow_search:
-                results = await asyncio.to_thread(self.index.search, name)
-        results = self._filter_event_scope(event, results)
-
-        valid = []
-        stale = []
-        for r in results:
-            path = Path(r["path"])
-            if not self._safe_path(path) or not path.exists() or not path.is_file():
-                stale.append(r)
-            else:
-                valid.append(r)
-        for r in stale:
-            await asyncio.to_thread(self.index.remove, r["path"])
-
-        if not valid:
-            return None, f"未找到文件: {name}"
-        if len(valid) > 1:
-            return None, self._multiple_match_message(valid, command)
-        return valid[0], None
-
-    async def _valid_existing_rows(self, rows: list[dict], event: AstrMessageEvent | None = None) -> list[dict]:
-        visible = self._filter_event_scope(event, rows)
-        valid = []
-        stale = []
-        for row in visible:
-            path = Path(row["path"])
-            if not self._safe_path(path) or not path.exists() or not path.is_file():
-                stale.append(row)
-            else:
-                valid.append(row)
-        for row in stale:
-            await asyncio.to_thread(self.index.remove, row["path"])
-        if stale:
-            self._log_info(f"[NAS] 懒清理: {len(stale)} 条脏记录")
-        return valid
-
-    async def _select_files(self, selector: str, event: AstrMessageEvent | None = None) -> tuple[list[dict], str | None]:
-        selector = self._strip_quotes(selector.strip())
-        if not selector:
-            return [], "选择器不能为空"
-
-        key, value = "", selector
-        if ":" in selector:
-            key, value = selector.split(":", 1)
-            key = key.strip().lower()
-            value = value.strip()
-        if not value:
-            return [], "选择器内容不能为空"
-
-        if key == "tag":
-            rows = await asyncio.to_thread(self.index.search_by_tag, value.lstrip("#").lower())
-        elif key in {"category", "cat"}:
-            rows = await asyncio.to_thread(self.index.find_by_category, value)
-        elif key in {"search", "s"}:
-            rows = await asyncio.to_thread(self.index.search, value)
-        elif key in {"path", "dir"}:
-            root = self._scope_root_for_event(event)
-            p = Path(value).expanduser()
-            target = p.resolve() if p.is_absolute() else (root / p).resolve()
-            if not self._path_in_event_scope(event, target):
-                return [], "目录不在可访问范围内"
-            rows = await asyncio.to_thread(self.index.find_under_path, str(target))
-        else:
-            categories = set(FileClassifier.get_all_categories())
-            if selector in categories:
-                rows = await asyncio.to_thread(self.index.find_by_category, selector)
-            else:
-                rows = await asyncio.to_thread(self.index.search, selector)
-
-        return await self._valid_existing_rows(rows, event), None
-
-    async def _run_watch_scan(self) -> dict:
-        watches = await asyncio.to_thread(self.index.list_watches)
-        counts = {"saved": 0, "duplicate": 0, "skipped": 0, "error": 0, "missing": 0, "total": 0}
-        for item in watches:
-            source = Path(item["path"])
-            if not source.exists():
-                counts["missing"] += 1
-                continue
-            if source.is_symlink():
-                counts["skipped"] += 1
-                continue
-            files, truncated = await asyncio.to_thread(self._collect_import_files, source)
-            if truncated:
-                self._log_info(f"[NAS] 监控目录已按上限截断: {source}")
-            for file_path in files:
-                result = await self._archive_file(file_path, "watch", item["category"] or None)
-                status = result["status"]
-                counts[status if status in counts else "error"] += 1
-                counts["total"] += 1
-        return counts
-
-    async def _move_info_to_dir(self, info: dict, target_dir: Path) -> tuple[bool, str]:
-        src = Path(info["path"]).resolve()
-        if not self._safe_path(src) or not src.exists() or not src.is_file():
-            await asyncio.to_thread(self.index.remove, str(src))
-            return False, f"{info['name']}: 文件不存在"
-        if not self._safe_path(target_dir):
-            return False, "目标目录不合法"
-        await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
-        dst = self._next_available_path(target_dir, src.name).resolve()
-        if not self._safe_path(dst):
-            return False, "目标路径不合法"
-        try:
-            await asyncio.to_thread(shutil.move, str(src), str(dst))
-            fp = await asyncio.to_thread(file_fingerprint, str(dst))
-            h = await asyncio.to_thread(file_hash, str(dst))
-            new_cat = FileClassifier.get_category(dst.name)
-            await asyncio.to_thread(self.index.move, str(src), h, str(dst), dst.name, fp[0], fp[1], new_cat)
-            return True, str(dst.relative_to(self.root))
-        except Exception as e:
-            return False, f"{info['name']}: {e}"
-
-    async def _create_export_zip(self, rows: list[dict], name: str | None = None) -> Path:
-        export_dir = self.root / ".exports"
-        await asyncio.to_thread(export_dir.mkdir, parents=True, exist_ok=True)
-        if name:
-            clean = Path(self._strip_quotes(name)).name
-            if not clean.lower().endswith(".zip"):
-                clean += ".zip"
-        else:
-            clean = f"nas_export_{time.strftime('%Y%m%d_%H%M%S')}.zip"
-        zip_path = self._next_available_path(export_dir, clean)
-
-        def write_zip():
-            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                for row in rows:
-                    path = Path(row["path"])
-                    if path.is_symlink() or not path.is_file():
-                        continue
-                    arcname = str(path.resolve().relative_to(self.root))
-                    zf.write(path, arcname)
-
-        await asyncio.to_thread(write_zip)
-        return zip_path
-
-    @staticmethod
-    def _next_available_path(save_dir: Path, name: str) -> Path:
-        save_path = save_dir / name
-        stem, suffix = save_path.stem, save_path.suffix
-        idx = 1
-        while save_path.exists():
-            save_path = save_dir / f"{stem}({idx}){suffix}"
-            idx += 1
-        return save_path
-
-    async def _archive_file(self, source: Path, owner: str, forced_category: str | None = None) -> dict:
-        source = source.expanduser()
-        if source.is_symlink():
-            return {"status": "skipped", "reason": "跳过软链接", "source": str(source)}
-        source = source.resolve()
-        if not await asyncio.to_thread(source.is_file):
-            return {"status": "skipped", "reason": "不是文件", "source": str(source)}
-
-        try:
-            file_size = (await asyncio.to_thread(source.stat)).st_size
-        except OSError as e:
-            return {"status": "error", "reason": f"读取文件信息失败: {e}", "source": str(source)}
-
-        if file_size > self.max_size:
-            return {
-                "status": "skipped",
-                "reason": f"文件超过限制: {format_size(file_size)}",
-                "source": str(source),
-            }
-
-        try:
-            src_hash = await asyncio.to_thread(file_hash, str(source))
-        except OSError as e:
-            return {"status": "error", "reason": f"计算哈希失败: {e}", "source": str(source)}
-
-        existing_source = await asyncio.to_thread(self.index.has_source_path, str(source))
-        if existing_source:
-            existing_path = Path(existing_source)
-            if self._safe_path(existing_path) and existing_path.exists():
-                try:
-                    existing_hash = await asyncio.to_thread(file_hash, str(existing_path))
-                    if existing_hash == src_hash:
-                        return {
-                            "status": "duplicate",
-                            "reason": f"源文件已导入: {existing_path.name}",
-                            "source": str(source),
-                        }
-                except OSError:
-                    pass
-            else:
-                await asyncio.to_thread(self.index.remove, existing_source)
-
-        if self.dedup:
-            existing = await asyncio.to_thread(self.index.has_hash, src_hash)
-            if existing:
-                existing_path = Path(existing)
-                if self._safe_path(existing_path) and existing_path.exists():
-                    return {
-                        "status": "duplicate",
-                        "reason": f"文件已存在: {Path(existing).name}",
-                        "source": str(source),
-                    }
-                await asyncio.to_thread(self.index.remove, existing)
-
-        name = Path(str(source.name)).name or f"file_{int(time.time())}"
-        category = forced_category or FileClassifier.get_category(name)
-        if not self._safe_dir_name(category):
-            category = "Others"
-
-        async with self._file_lock:
-            save_dir = self.root / category
-            await asyncio.to_thread(save_dir.mkdir, parents=True, exist_ok=True)
-            save_path = self._next_available_path(save_dir, name)
-            if not self._safe_path(save_path):
-                return {"status": "error", "reason": "目标路径不合法", "source": str(source)}
-            try:
-                if source != save_path:
-                    await asyncio.to_thread(shutil.copy2, str(source), str(save_path))
-                fp = await asyncio.to_thread(file_fingerprint, str(save_path))
-                await asyncio.to_thread(
-                    self.index.add,
-                    src_hash,
-                    str(save_path),
-                    save_path.name,
-                    fp[0],
-                    fp[1],
-                    category,
-                    str(owner),
-                    str(source),
-                )
-            except Exception as e:
-                return {"status": "error", "reason": f"保存失败: {e}", "source": str(source)}
-
-        return {
-            "status": "saved",
-            "path": str(save_path),
-            "name": save_path.name,
-            "category": category,
-            "size": file_size,
-            "source": str(source),
-        }
-
-    def _collect_import_files(self, source: Path) -> tuple[list[Path], bool]:
-        if source.is_file():
-            return ([] if self._skip_internal_file(source) else [source]), False
-        files = []
-        truncated = False
-        stack = [source]
-        while stack:
-            current = stack.pop()
-            try:
-                entries = list(current.iterdir())
-            except OSError:
-                continue
-            for entry in entries:
-                if entry.is_symlink():
-                    continue
-                if entry.is_dir():
-                    if self._skip_internal_dir(entry):
-                        continue
-                    stack.append(entry)
-                elif entry.is_file():
-                    if self._skip_internal_file(entry):
-                        continue
-                    files.append(entry)
-                    if len(files) >= self.path_import_max_files:
-                        return files, True
-        return files, truncated
-
-    def _skip_internal_dir(self, path: Path) -> bool:
-        try:
-            rel = path.resolve().relative_to(self.root)
-        except ValueError:
-            return False
-        return bool(rel.parts) and rel.parts[0] in {".previews", ".exports"}
-
-    def _skip_internal_file(self, path: Path) -> bool:
-        try:
-            rel = path.resolve().relative_to(self.root)
-        except ValueError:
-            return False
-        if bool(rel.parts) and rel.parts[0] in {".previews", ".exports"}:
-            return True
-        return rel.parent == Path(".") and rel.name in {"files.db", "files.db-wal", "files.db-shm"}
-
-    def _is_text_file(self, path: Path) -> bool:
-        text_exts = {
-            "txt", "md", "csv", "json", "xml", "yaml", "yml", "log", "ini", "conf",
-            "py", "js", "ts", "css", "html", "htm", "sh", "bat", "ps1",
-        }
-        return path.suffix.lower().lstrip(".") in text_exts
-
-    @staticmethod
-    def _is_image_file(path: Path) -> bool:
-        return path.suffix.lower().lstrip(".") in {"jpg", "jpeg", "png", "gif", "bmp", "webp"}
-
-    def _read_text_preview(self, path: Path) -> str:
-        raw = path.read_bytes()[: max(1, self.preview_text_chars) * 4]
-        for encoding in ("utf-8", "gb18030", "latin-1"):
-            try:
-                text = raw.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            text = raw.decode("utf-8", errors="replace")
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        if len(text) > self.preview_text_chars:
-            text = text[: self.preview_text_chars] + "\n..."
-        return text
-
-    def _image_preview_path(self, path: Path) -> Path:
-        try:
-            from PIL import Image as PILImage
-            preview = self.root / ".previews" / f"{path.stem}_{path.stat().st_mtime_ns}.jpg"
-            if preview.exists():
-                return preview
-            with PILImage.open(path) as img:
-                img.thumbnail((1024, 1024))
-                if img.mode not in {"RGB", "L"}:
-                    img = img.convert("RGB")
-                img.save(preview, "JPEG", quality=85)
-            return preview
-        except Exception:
-            return path
-
-    async def _send_file(self, event: AstrMessageEvent, info: dict):
-        file_path = Path(info["path"])
-        file_size = file_path.stat().st_size
-        if file_size > self.max_size:
-            yield event.plain_result(f"文件过大: {format_size(file_size)}")
-            return
-        self._log_info(f"[NAS] SEND | {event.get_sender_id()} | {info['category']}/{info['name']}")
-        try:
-            yield event.chain_result([File(name=info["name"], file=str(file_path))])
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning(f"[NAS] 文件发送失败: {e}")
-            yield event.plain_result("文件发送失败，可能文件较大或网络波动，请重试")
-            return
-        yield event.plain_result(f"已发送: {info['name']} ({format_size(file_size)})")
 
     # ---------- 自动接收 ----------
 
@@ -1592,7 +1065,7 @@ class NASPlugin(Star):
             f"  剩余: {format_size(usage.free)}",
             f"  数据库: {format_size(db_size)}",
             f"  索引状态: {status}",
-            "  版本: v2.3.0",
+            f"  版本: {PLUGIN_VERSION}",
             f"  后台检查: {self.auto_repair_interval} 分钟" if self.auto_repair_interval > 0 else "  后台检查: 关闭",
             f"  监控导入: {self.watch_interval} 分钟" if self.watch_interval > 0 else "  监控导入: 关闭",
             f"  公开目录: {self.public_read_root.relative_to(self.root)}" if self.allow_all_users else "  公开目录: 关闭",
@@ -1657,25 +1130,4 @@ class NASPlugin(Star):
         yield event.plain_result(self._nas_help_text())
 
     def _nas_help_text(self) -> str:
-        return (
-            "NAS 助手 v2.3\n\n"
-            "常用:\n"
-            "/ls [路径]                         - 查看目录\n"
-            "/tree [路径] [深度]                - 查看目录树\n"
-            "/get 文件                          - 发送文件\n"
-            "/preview 文件                      - 预览图片和文本\n"
-            "/search 关键词|tag:标签|--recent   - 搜索文件、标签或最近文件\n"
-            "/tag 文件 [标签...]                - 查看、添加、移除标签，-标签 表示移除\n"
-            "/note 文件 [内容]                  - 查看、设置备注，- 表示清空\n"
-            "/status                            - 空间、索引与运行状态\n\n"
-            "管理:\n"
-            "/add 源路径 [分类]                 - 从任意本机/NAS路径导入\n"
-            "/watch list|add|rm|run             - 管理监控目录\n"
-            "/dups [数量]                       - 重复文件审计\n"
-            "/batch 选择器 tag|untag|move ...   - 批量标签或移动\n"
-            "/export 选择器 [zip]               - 导出ZIP\n"
-            "/rm 文件                           - 删除文件，需 /confirm\n"
-            "/confirm | /cancel                 - 确认或取消删除\n"
-            "/mv 源 目标路径或新文件名          - 移动或重命名文件\n"
-            "/repair [vacuum]                   - 修复索引或整理数据库"
-        )
+        return nas_help_text()

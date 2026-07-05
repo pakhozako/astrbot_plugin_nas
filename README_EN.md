@@ -16,8 +16,12 @@
 
 ```
 main.py              ← Plugin entry + AstrBot handlers
+├── access_control.py← Permission, group, and public scope helpers
 ├── config.py        ← Configuration normalization
+├── constants.py     ← Version, internal path, and extension constants
 ├── command_args.py  ← Command text parsing
+├── file_services.py ← File lookup, import, preview, export, and send helpers
+├── help_text.py     ← /nashelp text
 ├── runtime_state.py ← Rate limit and index task state
 ├── index.py         ← SQLite index layer
 └── utils.py         ← Utilities + classifier
@@ -39,7 +43,7 @@ main.py              ← Plugin entry + AstrBot handlers
 | 📥 Path import | `/add` imports from any local path or mounted NAS path |
 | 👀 Directory watch | `/watch` adds external directories for manual or scheduled import |
 | 🧬 Duplicate audit | `/dups` lists duplicate groups by content hash |
-| 📦 Batch/export | `/batch` tags, untags, or moves matches; `/export` creates ZIP packages from selectors |
+| 📦 Batch/export | `/batch` tags, untags, or moves matches; `/export` uses 7-Zip by default to create ZIP packages from selectors |
 | 🖼️ Preview | `/preview` supports images and text excerpts |
 | 🧵 I/O isolation | Hashing, copy, move, traversal, and SQLite operations run in worker threads |
 | 🛡️ Path guard | Managed read/delete/move operations stay inside `save_root` |
@@ -85,6 +89,7 @@ After restarting AstrBot, configure the admin list and archive path as needed in
 | `path_import_max_files` | `2000` | Max files imported by one `/add` directory run |
 | `watch_interval_minutes` | `0` | Scheduled watch import interval; 0 disables it |
 | `export_max_files` | `100` | Max files per `/export` |
+| `seven_zip_path` | `D:\7-Zip\7z.exe` | 7-Zip executable used by `/export`; invalid or empty values auto-discover 7-Zip and then fall back to built-in ZIP |
 | `batch_max_files` | `100` | Max files per `/batch` |
 | `rebuild_busy_timeout_seconds` | `600` | Timeout for index busy state, preventing stale rebuild status from blocking forever |
 | `auto_repair_interval_minutes` | `0` | Background consistency check interval; 0 disables it |

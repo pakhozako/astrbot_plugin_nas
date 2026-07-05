@@ -16,8 +16,12 @@
 
 ```
 main.py              ← 插件入口 + AstrBot Handler
+├── access_control.py← 权限、群聊和普通用户目录作用域
 ├── config.py        ← 配置归一化
+├── constants.py     ← 版本、内部目录和扩展名常量
 ├── command_args.py  ← 命令文本解析
+├── file_services.py ← 文件查找、导入、预览、导出与发送
+├── help_text.py     ← /nashelp 帮助文本
 ├── runtime_state.py ← 限流与索引任务状态
 ├── index.py         ← SQLite 索引层
 └── utils.py         ← 工具函数 + 分类器
@@ -39,7 +43,7 @@ main.py              ← 插件入口 + AstrBot Handler
 | 📥 路径导入 | `/add` 可从任意本机路径或 NAS 挂载路径导入文件或目录 |
 | 👀 目录监控 | `/watch` 添加外部目录，可手动或定时扫描导入 |
 | 🧬 重复审计 | `/dups` 按内容哈希列出重复文件组 |
-| 📦 批量与导出 | `/batch` 批量打标签、移除标签、移动；`/export` 按选择器打包 ZIP |
+| 📦 批量与导出 | `/batch` 批量打标签、移除标签、移动；`/export` 默认使用 7-Zip 按选择器打包 ZIP |
 | 🖼️ 预览 | `/preview` 支持图片预览和文本摘要 |
 | 🧵 IO 隔离 | 大文件哈希、复制、移动、遍历和 SQLite 操作放入线程执行 |
 | 🛡️ 路径防护 | 归档后的读取、删除、移动都限制在 `save_root` 内 |
@@ -85,6 +89,7 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 | `path_import_max_files` | `2000` | `/add` 单次目录导入上限 |
 | `watch_interval_minutes` | `0` | 监控目录自动导入间隔，0 表示关闭 |
 | `export_max_files` | `100` | `/export` 单次导出最大文件数 |
+| `seven_zip_path` | `D:\7-Zip\7z.exe` | `/export` 使用的 7-Zip 路径，留空或无效时自动探测并回退内置 ZIP |
 | `batch_max_files` | `100` | `/batch` 单次处理最大文件数 |
 | `rebuild_busy_timeout_seconds` | `600` | 索引任务忙碌状态超时，避免异常状态一直显示重建中 |
 | `auto_repair_interval_minutes` | `0` | 后台一致性检查间隔，0 表示关闭 |
