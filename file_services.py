@@ -753,10 +753,23 @@ class FileServiceMixin:
             task.add_done_callback(tasks.discard)
 
     @staticmethod
+    def _parse_signed_int(value: Any) -> int | None:
+        text = str(value).strip()
+        if not text:
+            return None
+        digits = text[1:] if text[0] in {"+", "-"} else text
+        if not digits.isdigit():
+            return None
+        return int(text)
+
+    @staticmethod
     def _extract_message_ids(result: Any) -> list[Any]:
         if isinstance(result, dict):
             value = result.get("message_id")
-            return [value] if value is not None else []
+            if value is None:
+                return []
+            parsed = FileServiceMixin._parse_signed_int(value)
+            return [parsed if parsed is not None else value]
         if isinstance(result, list):
             ids = []
             for item in result:
@@ -812,7 +825,8 @@ class FileServiceMixin:
 
         is_group = bool(event.get_group_id())
         session_id = event.get_group_id() if is_group else event.get_sender_id()
-        if not str(session_id).isdigit():
+        target_id = self._parse_signed_int(session_id)
+        if target_id is None:
             return False, False
 
         routing_params = {}
@@ -826,13 +840,13 @@ class FileServiceMixin:
         try:
             if is_group:
                 result = await bot.send_group_msg(
-                    group_id=int(session_id),
+                    group_id=target_id,
                     message=[payload],
                     **routing_params,
                 )
             else:
                 result = await bot.send_private_msg(
-                    user_id=int(session_id),
+                    user_id=target_id,
                     message=[payload],
                     **routing_params,
                 )
