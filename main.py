@@ -100,6 +100,13 @@ class NASPlugin(Star):
     def _is_admin(self, uid: str) -> bool:
         return str(uid) in self.admins
 
+    @staticmethod
+    def _stop_event(event: AstrMessageEvent):
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+
     def _is_group_message(self, event: AstrMessageEvent) -> bool:
         obj = getattr(event, "message_obj", None)
         group_id = getattr(obj, "group_id", None)
@@ -496,8 +503,9 @@ class NASPlugin(Star):
 
     # ---------- ls ----------
 
-    @filter.regex(r"^/ls(\s|$)|^/列表(\s|$)|^/查看(\s|$)")
+    @filter.command("ls", alias={"列表", "查看"}, priority=100)
     async def cmd_ls(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
@@ -548,8 +556,9 @@ class NASPlugin(Star):
 
     # ---------- get ----------
 
-    @filter.regex(r"^/get(\s|$)|^/获取(\s|$)|^/下载(\s|$)|^/发送文件(\s|$)")
+    @filter.command("get", alias={"获取", "下载", "发送文件"}, priority=100)
     async def cmd_get(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
@@ -573,8 +582,9 @@ class NASPlugin(Star):
 
     # ---------- search ----------
 
-    @filter.regex(r"^/search(\s|$)|^/搜索(\s|$)|^/搜索文件(\s|$)")
+    @filter.command("search", alias={"搜索", "搜索文件"}, priority=100)
     async def cmd_search(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
@@ -625,8 +635,9 @@ class NASPlugin(Star):
 
     # ---------- recent ----------
 
-    @filter.regex(r"^/recent(\s|$)|^/最近(\s|$)|^/最近文件(\s|$)")
+    @filter.command("recent", alias={"最近", "最近文件"}, priority=100)
     async def cmd_recent(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
@@ -664,8 +675,9 @@ class NASPlugin(Star):
 
     # ---------- tree ----------
 
-    @filter.regex(r"^/tree(\s|$)|^/目录树(\s|$)")
+    @filter.command("tree", alias={"目录树"}, priority=100)
     async def cmd_tree(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
@@ -728,8 +740,9 @@ class NASPlugin(Star):
 
     # ---------- rm ----------
 
-    @filter.regex(r"^/rm(\s|$)|^/删除(\s|$)|^/删除文件(\s|$)")
+    @filter.command("rm", alias={"删除", "删除文件"}, priority=100)
     async def cmd_rm(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event, admin=True, action="删除文件")
         if err:
             yield event.plain_result(err)
@@ -761,8 +774,9 @@ class NASPlugin(Star):
             f"{self.confirm_ttl}秒内回复「/确认删除」执行，「/取消」放弃"
         )
 
-    @filter.regex(r"^/确认删除$")
+    @filter.command("确认删除", priority=100)
     async def cmd_confirm_delete(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event, admin=True, action="删除文件")
         if err:
             yield event.plain_result(err)
@@ -799,15 +813,17 @@ class NASPlugin(Star):
         self._log_info(f"[NAS] DELETE | {uid} | {waiting['category']}/{waiting['name']}")
         yield event.plain_result(f"已删除: {waiting['name']}")
 
-    @filter.regex(r"^/取消$")
+    @filter.command("取消", priority=100)
     async def cmd_cancel(self, event: AstrMessageEvent):
+        self._stop_event(event)
         if self._delete_pending.pop(str(event.get_sender_id()), None):
             yield event.plain_result("已取消删除")
 
     # ---------- mv ----------
 
-    @filter.regex(r"^/mv(\s|$)|^/移动(\s|$)|^/移动文件(\s|$)")
+    @filter.command("mv", alias={"移动", "移动文件"}, priority=100)
     async def cmd_mv(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event, admin=True, action="移动文件")
         if err:
             yield event.plain_result(err)
@@ -858,8 +874,9 @@ class NASPlugin(Star):
 
     # ---------- rename ----------
 
-    @filter.regex(r"^/rename(\s|$)|^/重命名(\s|$)")
+    @filter.command("rename", alias={"重命名"}, priority=100)
     async def cmd_rename(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event, admin=True, action="重命名文件")
         if err:
             yield event.plain_result(err)
@@ -905,8 +922,9 @@ class NASPlugin(Star):
 
     # ---------- path import ----------
 
-    @filter.regex(r"^/add(\s|$)|^/addpath(\s|$)|^/添加(\s|$)|^/路径添加(\s|$)")
+    @filter.command("add", alias={"addpath", "添加", "路径添加"}, priority=100)
     async def cmd_add_path(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event, admin=True, action="从路径添加文件")
         if err:
             yield event.plain_result(err)
@@ -958,8 +976,9 @@ class NASPlugin(Star):
 
     # ---------- tag ----------
 
-    @filter.regex(r"^/tag(\s|$)|^/标签(\s|$)|^/打标签(\s|$)")
+    @filter.command("tag", alias={"标签", "打标签"}, priority=100)
     async def cmd_tag(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event, admin=True, action="修改标签")
         if err:
             yield event.plain_result(err)
@@ -1001,8 +1020,9 @@ class NASPlugin(Star):
             parts.append("移除 " + " ".join(f"#{t}" for t in removed))
         yield event.plain_result(f"{info['name']} 标签已更新: " + "；".join(parts))
 
-    @filter.regex(r"^/untag(\s|$)|^/移除标签(\s|$)")
+    @filter.command("untag", alias={"移除标签"}, priority=100)
     async def cmd_untag(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event, admin=True, action="修改标签")
         if err:
             yield event.plain_result(err)
@@ -1019,8 +1039,9 @@ class NASPlugin(Star):
         removed = await asyncio.to_thread(self.index.remove_tags, info["path"], tags)
         yield event.plain_result(f"已从 {info['name']} 移除标签: " + " ".join(f"#{t}" for t in removed))
 
-    @filter.regex(r"^/tags(\s|$)|^/查看标签(\s|$)")
+    @filter.command("tags", alias={"查看标签"}, priority=100)
     async def cmd_tags(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
@@ -1038,8 +1059,9 @@ class NASPlugin(Star):
 
     # ---------- preview ----------
 
-    @filter.regex(r"^/preview(\s|$)|^/预览(\s|$)")
+    @filter.command("preview", alias={"预览"}, priority=100)
     async def cmd_preview(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
@@ -1076,8 +1098,9 @@ class NASPlugin(Star):
 
     # ---------- du / health / repair ----------
 
-    @filter.regex(r"^/status(\s|$)|^/du(\s|$)|^/状态(\s|$)|^/空间(\s|$)")
+    @filter.command("status", alias={"du", "状态", "空间"}, priority=100)
     async def cmd_du(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
@@ -1108,8 +1131,9 @@ class NASPlugin(Star):
 
         yield event.plain_result("\n".join(lines))
 
-    @filter.regex(r"^/health$")
+    @filter.command("health", priority=100)
     async def cmd_health(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event)
         if err:
             yield event.plain_result(err)
@@ -1128,8 +1152,9 @@ class NASPlugin(Star):
             f"版本: v2.2.0"
         )
 
-    @filter.regex(r"^/repair$|^/修复$")
+    @filter.command("repair", alias={"修复"}, priority=100)
     async def cmd_repair(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event, admin=True, action="修复索引")
         if err:
             yield event.plain_result(err)
@@ -1157,8 +1182,9 @@ class NASPlugin(Star):
 
     # ---------- nas ----------
 
-    @filter.regex(r"^/nashelp(\s|$)|^/nas帮助(\s|$)")
+    @filter.command("nashelp", alias={"nas帮助"}, priority=100)
     async def cmd_nas(self, event: AstrMessageEvent):
+        self._stop_event(event)
         yield event.plain_result(self._nas_help_text())
 
     def _nas_help_text(self) -> str:
@@ -1182,8 +1208,9 @@ class NASPlugin(Star):
 
     # ---------- vacuum ----------
 
-    @filter.regex(r"^/vacuum$|^/整理$")
+    @filter.command("vacuum", alias={"整理"}, priority=100)
     async def cmd_vacuum(self, event: AstrMessageEvent):
+        self._stop_event(event)
         err = self._access_error(event, admin=True, action="整理数据库")
         if err:
             yield event.plain_result(err)
