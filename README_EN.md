@@ -79,7 +79,7 @@ After restarting AstrBot, configure the admin list and archive path as needed in
 | `allow_all_users` | `false` | Enable read-only access for everyone |
 | `public_read_dir` | `Public` | Directory ordinary users can browse and fetch, inside `save_root` |
 | `public_rate_limit_per_minute` | `10` | Read-only command limit per ordinary user per minute; 0 disables the limit |
-| `public_file_recall_minutes` | `0` | Auto-recall delay for ordinary-user `/get` file messages; 0 disables it |
+| `public_file_recall_minutes` | `0` | Auto-recall delay for ordinary-user `/get` files; 0 disables it; group chats delete the group file entity |
 | `allow_group_commands` | `false` | Allow commands in group chats |
 | `max_file_size` | `2048` | Max file size in MB |
 | `auto_save_enabled` | `true` | Auto-save private chat files |

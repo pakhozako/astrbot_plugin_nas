@@ -741,11 +741,37 @@ class FileServiceMixin:
         except Exception:
             return path
 
-    def _schedule_recall(self, bot: Any, message_ids: list[Any], delay_seconds: int, routing_params: dict[str, Any]) -> None:
-        if not message_ids or delay_seconds <= 0:
+    def _schedule_recall(
+        self,
+        bot: Any,
+        delay_seconds: int,
+        routing_params: dict[str, Any],
+        message_ids: list[Any] | None = None,
+        group_id: int | None = None,
+        group_file_refs: list[dict[str, Any]] | None = None,
+        file_name: str = "",
+        file_size: int | None = None,
+        before_group_file_keys: set[tuple[str, str]] | None = None,
+        uploaded_after: int | None = None,
+    ) -> None:
+        if delay_seconds <= 0:
+            return
+        has_target = bool(message_ids) or bool(group_file_refs) or bool(group_id and file_name)
+        if not has_target:
             return
         task = asyncio.create_task(
-            self._delete_messages_later(bot, message_ids, delay_seconds, routing_params),
+            self._recall_public_file_later(
+                bot=bot,
+                delay_seconds=delay_seconds,
+                routing_params=routing_params,
+                message_ids=message_ids or [],
+                group_id=group_id,
+                group_file_refs=group_file_refs or [],
+                file_name=file_name,
+                file_size=file_size,
+                before_group_file_keys=before_group_file_keys or set(),
+                uploaded_after=uploaded_after,
+            ),
         )
         tasks = getattr(self, "_recall_tasks", None)
         if isinstance(tasks, set):
@@ -777,28 +803,197 @@ class FileServiceMixin:
             return ids
         return []
 
-    async def _delete_messages_later(
+    @staticmethod
+    def _file_ref_key(ref: dict[str, Any]) -> tuple[str, str]:
+        file_id = str(ref.get("file_id") or ref.get("id") or "")
+        busid = str(ref.get("busid") or ref.get("bus_id") or "")
+        return file_id, busid
+
+    @staticmethod
+    def _extract_group_file_refs(result: Any) -> list[dict[str, Any]]:
+        refs = []
+
+        def walk(value: Any):
+            if isinstance(value, dict):
+                file_id = value.get("file_id") or value.get("id")
+                if file_id:
+                    ref = dict(value)
+                    ref["file_id"] = file_id
+                    refs.append(ref)
+                for nested_key in ("data", "file", "files", "items", "result"):
+                    nested = value.get(nested_key)
+                    if nested is not None and nested is not value:
+                        walk(nested)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(result)
+        deduped = []
+        seen = set()
+        for ref in refs:
+            key = FileServiceMixin._file_ref_key(ref)
+            if key[0] and key not in seen:
+                seen.add(key)
+                deduped.append(ref)
+        return deduped
+
+    @staticmethod
+    def _group_files_from_result(result: Any) -> list[dict[str, Any]]:
+        if isinstance(result, dict):
+            for key in ("files", "file", "items"):
+                value = result.get(key)
+                if isinstance(value, list):
+                    return [dict(item) for item in value if isinstance(item, dict)]
+            data = result.get("data")
+            if data is not None and data is not result:
+                return FileServiceMixin._group_files_from_result(data)
+        if isinstance(result, list):
+            return [dict(item) for item in result if isinstance(item, dict)]
+        return []
+
+    async def _call_bot_action(self, bot: Any, action: str, routing_params: dict[str, Any], **params):
+        if routing_params:
+            try:
+                return await bot.call_action(action, **params, **routing_params)
+            except Exception as first_error:
+                try:
+                    return await bot.call_action(action, **params)
+                except Exception:
+                    raise first_error
+        return await bot.call_action(action, **params)
+
+    async def _get_group_root_file_refs(
         self,
         bot: Any,
-        message_ids: list[Any],
+        group_id: int,
+        routing_params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        try:
+            result = await self._call_bot_action(
+                bot,
+                "get_group_root_files",
+                routing_params,
+                group_id=group_id,
+            )
+        except Exception as e:
+            logger.debug(f"[NAS] 获取群文件列表失败，稍后仍会尝试撤回: {e}")
+            return []
+        return self._group_files_from_result(result)
+
+    async def _locate_group_file_refs(
+        self,
+        bot: Any,
+        group_id: int,
+        routing_params: dict[str, Any],
+        file_name: str,
+        file_size: int | None,
+        before_keys: set[tuple[str, str]],
+        uploaded_after: int | None,
+    ) -> list[dict[str, Any]]:
+        files = await self._get_group_root_file_refs(bot, group_id, routing_params)
+        candidates = []
+        for item in files:
+            name = item.get("file_name") or item.get("name")
+            if name != file_name:
+                continue
+            if file_size is not None:
+                size = item.get("file_size") or item.get("size")
+                try:
+                    if size is not None and int(size) != int(file_size):
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            key = self._file_ref_key(item)
+            if key[0] and key in before_keys:
+                continue
+            upload_time = item.get("upload_time") or item.get("modify_time")
+            if uploaded_after and upload_time is not None:
+                try:
+                    if int(upload_time) + 10 < uploaded_after:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            candidates.append(item)
+        if not candidates:
+            return []
+
+        def time_distance(item: dict[str, Any]) -> int:
+            upload_time = item.get("upload_time") or item.get("modify_time")
+            if not uploaded_after or upload_time is None:
+                return 0
+            try:
+                return abs(int(upload_time) - uploaded_after)
+            except (TypeError, ValueError):
+                return 10**12
+
+        candidates.sort(key=lambda item: (time_distance(item), self._file_ref_key(item)))
+        return candidates[:1]
+
+    async def _delete_group_file_refs(
+        self,
+        bot: Any,
+        group_id: int,
+        refs: list[dict[str, Any]],
+        routing_params: dict[str, Any],
+        file_name: str,
+    ) -> bool:
+        deleted = False
+        for ref in refs:
+            file_id = ref.get("file_id") or ref.get("id")
+            if not file_id:
+                continue
+            params = {
+                "group_id": group_id,
+                "file_id": file_id,
+            }
+            busid = ref.get("busid") or ref.get("bus_id")
+            if busid is not None:
+                params["busid"] = busid
+            try:
+                await self._call_bot_action(bot, "delete_group_file", routing_params, **params)
+                deleted = True
+                logger.info(f"[NAS] 已自动删除群文件: {file_name} ({file_id})")
+            except Exception as e:
+                logger.warning(f"[NAS] 自动删除群文件失败: {file_name} ({file_id}) | {e}")
+        return deleted
+
+    async def _recall_public_file_later(
+        self,
+        bot: Any,
         delay_seconds: int,
         routing_params: dict[str, Any],
+        message_ids: list[Any],
+        group_id: int | None,
+        group_file_refs: list[dict[str, Any]],
+        file_name: str,
+        file_size: int | None,
+        before_group_file_keys: set[tuple[str, str]],
+        uploaded_after: int | None,
     ) -> None:
         await asyncio.sleep(delay_seconds)
+        if group_id and file_name:
+            refs = list(group_file_refs)
+            if not refs:
+                refs = await self._locate_group_file_refs(
+                    bot,
+                    group_id,
+                    routing_params,
+                    file_name,
+                    file_size,
+                    before_group_file_keys,
+                    uploaded_after,
+                )
+            deleted = await self._delete_group_file_refs(bot, group_id, refs, routing_params, file_name)
+            if not deleted:
+                logger.warning(f"[NAS] 自动撤回群文件失败: 未找到可删除的群文件引用 | {file_name}")
+
         for message_id in message_ids:
             try:
-                if routing_params:
-                    await bot.call_action("delete_msg", message_id=message_id, **routing_params)
-                else:
-                    await bot.call_action("delete_msg", message_id=message_id)
-            except Exception as first_error:
-                if not routing_params:
-                    logger.warning(f"[NAS] 自动撤回文件消息失败: {first_error}")
-                    continue
-                try:
-                    await bot.call_action("delete_msg", message_id=message_id)
-                except Exception as e:
-                    logger.warning(f"[NAS] 自动撤回文件消息失败: {e}")
+                await self._call_bot_action(bot, "delete_msg", routing_params, message_id=message_id)
+                logger.info(f"[NAS] 已自动撤回文件消息: {message_id}")
+            except Exception as e:
+                logger.warning(f"[NAS] 自动撤回文件消息失败: {e}")
 
     async def _send_file_with_public_recall(
         self,
@@ -809,18 +1004,6 @@ class FileServiceMixin:
     ) -> tuple[bool, bool]:
         bot = getattr(event, "bot", None)
         if bot is None:
-            return False, False
-
-        try:
-            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
-                AiocqhttpMessageEvent,
-            )
-
-            payload = await AiocqhttpMessageEvent._from_segment_to_dict(
-                File(name=file_name, file=str(file_path)),
-            )
-        except Exception as e:
-            logger.warning(f"[NAS] 构建可撤回文件消息失败: {e}")
             return False, False
 
         is_group = bool(event.get_group_id())
@@ -837,19 +1020,69 @@ class FileServiceMixin:
         if self_id:
             routing_params["self_id"] = self_id
 
-        try:
-            if is_group:
-                result = await bot.send_group_msg(
+        if is_group:
+            try:
+                file_size = file_path.stat().st_size
+                before_refs = await self._get_group_root_file_refs(bot, target_id, routing_params)
+                before_keys = {
+                    self._file_ref_key(ref)
+                    for ref in before_refs
+                    if self._file_ref_key(ref)[0]
+                }
+                uploaded_after = int(time.time())
+                result = await self._call_bot_action(
+                    bot,
+                    "upload_group_file",
+                    routing_params,
                     group_id=target_id,
-                    message=[payload],
-                    **routing_params,
+                    file=str(file_path.resolve()),
+                    name=file_name,
                 )
-            else:
-                result = await bot.send_private_msg(
-                    user_id=target_id,
-                    message=[payload],
-                    **routing_params,
+                message_ids = self._extract_message_ids(result)
+                group_file_refs = self._extract_group_file_refs(result)
+                if not group_file_refs:
+                    await asyncio.sleep(1)
+                    group_file_refs = await self._locate_group_file_refs(
+                        bot,
+                        target_id,
+                        routing_params,
+                        file_name,
+                        file_size,
+                        before_keys,
+                        uploaded_after,
+                    )
+                self._schedule_recall(
+                    bot=bot,
+                    delay_seconds=delay_seconds,
+                    routing_params=routing_params,
+                    message_ids=message_ids,
+                    group_id=target_id,
+                    group_file_refs=group_file_refs,
+                    file_name=file_name,
+                    file_size=file_size,
+                    before_group_file_keys=before_keys,
+                    uploaded_after=uploaded_after,
                 )
+                if not group_file_refs and not message_ids:
+                    logger.warning(f"[NAS] 群文件已上传，但暂未定位到文件引用，将在撤回时再次查找: {file_name}")
+                return True, True
+            except Exception as e:
+                logger.warning(f"[NAS] 可撤回群文件发送失败，回退普通发送: {e}")
+                return False, False
+
+        try:
+            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+                AiocqhttpMessageEvent,
+            )
+
+            payload = await AiocqhttpMessageEvent._from_segment_to_dict(
+                File(name=file_name, file=str(file_path)),
+            )
+            result = await bot.send_private_msg(
+                user_id=target_id,
+                message=[payload],
+                **routing_params,
+            )
         except Exception as e:
             logger.warning(f"[NAS] 可撤回文件发送失败，回退普通发送: {e}")
             return False, False
@@ -857,7 +1090,12 @@ class FileServiceMixin:
         message_ids = self._extract_message_ids(result)
         recalled = bool(message_ids)
         if recalled:
-            self._schedule_recall(bot, message_ids, delay_seconds, routing_params)
+            self._schedule_recall(
+                bot=bot,
+                delay_seconds=delay_seconds,
+                routing_params=routing_params,
+                message_ids=message_ids,
+            )
         else:
             logger.warning("[NAS] 文件已发送，但平台未返回 message_id，无法自动撤回")
         return True, recalled
