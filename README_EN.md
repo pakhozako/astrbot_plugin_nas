@@ -136,7 +136,7 @@ All commands require `/` to avoid accidental triggers in normal chat.
 | `files.db` deleted | Restart or `/repair` rebuilds from archived files |
 | `files.db` corrupt | `integrity_check != ok` backs it up as `files.db.broken.<timestamp>` and rebuilds |
 | File deleted externally | `/get`, `/search`, `/search --recent`, etc. lazily clean stale records |
-| Rebuild in progress | Read commands return "NAS索引重建中，请稍后再试" |
+| Rebuild in progress | Read commands remain usable; `/status` shows the active index task and new `/repair` waits or takes over after timeout |
 
 Files live on disk. SQLite stores the index and tags.
 

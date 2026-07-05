@@ -385,14 +385,16 @@ class FileIndex:
             try:
                 path = str(f)
                 st = f.stat()
-                h = file_hash(path)
                 row = old_rows.get(path)
-                changed = row is None or row[1:4] != (st.st_size, int(st.st_mtime), h)
+                size = st.st_size
+                mtime = int(st.st_mtime)
+                changed = row is None or row[1] != size or row[2] != mtime
+                h = file_hash(path) if changed else row[3]
                 created_at = now if row is None else row[4]
                 owner = "" if row is None else row[5]
                 source_path = "" if row is None else row[6]
                 note = "" if row is None else row[7]
-                upserts.append((path, h, f.name, st.st_size, int(st.st_mtime), cat, created_at, owner, source_path, note))
+                upserts.append((path, h, f.name, size, mtime, cat, created_at, owner, source_path, note))
                 fs_paths.add(path)
                 if row is None:
                     added += 1

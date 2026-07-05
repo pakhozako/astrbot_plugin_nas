@@ -254,11 +254,6 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         if err:
             yield event.plain_result(err)
             return
-        busy = self._rebuild_busy_message()
-        if busy:
-            yield event.plain_result(busy)
-            return
-
         base_root = self._scope_root_for_event(event)
         args = self._split_command_args(event, {"ls"}, maxsplit=1)
         if args:
@@ -313,11 +308,6 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         if err:
             yield event.plain_result(err)
             return
-        busy = self._rebuild_busy_message()
-        if busy:
-            yield event.plain_result(busy)
-            return
-
         args = self._split_command_args(event, {"get"}, maxsplit=1)
         if len(args) < 1:
             yield event.plain_result("用法: /get 文件名")
@@ -340,11 +330,6 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         if err:
             yield event.plain_result(err)
             return
-        busy = self._rebuild_busy_message()
-        if busy:
-            yield event.plain_result(busy)
-            return
-
         args = self._split_command_args(event, {"search"}, maxsplit=1)
         if len(args) < 1:
             yield event.plain_result("用法: /search 关键词 | /search tag:标签 | /search --recent [数量]")
@@ -1048,11 +1033,6 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         if err:
             yield event.plain_result(err)
             return
-        busy = self._rebuild_busy_message()
-        if busy:
-            yield event.plain_result(busy)
-            return
-
         usage = await asyncio.to_thread(shutil.disk_usage, self.root)
         stats = await asyncio.to_thread(self.index.get_stats)
         db_size = await asyncio.to_thread(self.index.get_db_size)

@@ -136,7 +136,7 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 | `files.db` 被删除 | 重启或 `/repair` 后从归档目录重建 |
 | `files.db` 损坏 | `integrity_check` 不为 `ok` 时自动备份为 `files.db.broken.<时间戳>` 并重建 |
 | 文件被外部删除 | `/get`、`/search`、`/search --recent` 等操作会懒清理脏索引 |
-| 索引重建中 | 读命令返回「索引重建中，请稍后再试」 |
+| 索引重建中 | 读命令继续可用，`/status` 显示当前索引任务；新的 `/repair` 会等任务结束或超时接管 |
 
 文件内容存储在磁盘上；SQLite 保存索引和标签。
 
