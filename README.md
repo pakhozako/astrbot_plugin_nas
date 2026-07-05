@@ -104,7 +104,7 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 | `/nashelp` | 显示帮助 |
 | `/ls [路径]` | 查看目录内容 |
 | `/tree [路径] [深度]` | 查看目录树，默认深度 2，最大深度 5 |
-| `/get 文件` | 发送已保存文件，支持 `category/file` |
+| `/get 文件` | 发送已保存文件，支持裸文件名、`category/file` 和 `Public/file` |
 | `/preview 文件` | 图片预览或文本摘要 |
 | `/search 关键词` | 搜索文件；标签搜索用 `tag:标签` |
 | `/search --recent [数量]` | 查看最近文件，默认 10，最大 30 |

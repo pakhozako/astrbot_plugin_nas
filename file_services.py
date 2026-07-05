@@ -35,6 +35,53 @@ class FileServiceMixin:
         suffix = "\n..." if len(results) > 8 else ""
         return f"找到多个文件:\n{locations}{suffix}\n请使用 {command} category/file 或完整相对路径 指定"
 
+    def _direct_file_candidates(self, name: str, base_root: Path) -> list[Path]:
+        normalized = name.replace("\\", "/")
+        candidates = []
+        seen = set()
+
+        def add(path: Path):
+            resolved = path.resolve()
+            key = str(resolved).lower()
+            if key not in seen:
+                seen.add(key)
+                candidates.append(resolved)
+
+        try:
+            public_rel = str(self.public_read_root.resolve().relative_to(self.root.resolve())).replace("\\", "/")
+        except ValueError:
+            public_rel = ""
+        if public_rel and (normalized == public_rel or normalized.startswith(public_rel + "/")):
+            add(self.root / normalized)
+
+        add(base_root / name)
+        if "/" not in normalized:
+            add(self.public_read_root / name)
+        return candidates
+
+    def _find_filesystem_name_matches(self, root: Path, name: str, limit: int = 9) -> list[Path]:
+        matches = []
+        stack = [root]
+        while stack and len(matches) < limit:
+            current = stack.pop()
+            try:
+                entries = sorted(current.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir():
+                    if self._skip_internal_dir(entry):
+                        continue
+                    stack.append(entry)
+                    continue
+                if entry.is_file() and entry.name == name and not self._skip_internal_file(entry):
+                    matches.append(entry.resolve())
+                    if len(matches) >= limit:
+                        break
+        return matches
+
     async def _resolve_indexed_file(
         self,
         query: str,
@@ -60,12 +107,15 @@ class FileServiceMixin:
             info = await asyncio.to_thread(self.index.find_by_path, str(file_path))
             return info or self._info_from_path(file_path), None
 
-        rel_path = (base_root / name).resolve()
-        if ("/" in name or "\\" in name) and self._safe_path(rel_path) and self._path_in_event_scope(event, rel_path) and rel_path.exists():
-            if not rel_path.is_file():
+        for file_path in self._direct_file_candidates(name, base_root):
+            if not self._safe_path(file_path) or not self._path_in_event_scope(event, file_path):
+                continue
+            if not file_path.exists():
+                continue
+            if not file_path.is_file():
                 return None, f"不是文件: {name}"
-            info = await asyncio.to_thread(self.index.find_by_path, str(rel_path))
-            return info or self._info_from_path(rel_path), None
+            info = await asyncio.to_thread(self.index.find_by_path, str(file_path))
+            return info or self._info_from_path(file_path), None
 
         normalized = name.replace("\\", "/")
         if "/" in normalized:
@@ -92,6 +142,10 @@ class FileServiceMixin:
                 valid.append(row)
         for row in stale:
             await asyncio.to_thread(self.index.remove, row["path"])
+
+        if not valid and "/" not in normalized:
+            fs_matches = await asyncio.to_thread(self._find_filesystem_name_matches, base_root, name)
+            valid = [self._info_from_path(path) for path in fs_matches]
 
         if not valid:
             return None, f"未找到文件: {name}"

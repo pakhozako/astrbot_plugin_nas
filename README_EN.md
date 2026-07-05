@@ -104,7 +104,7 @@ After restarting AstrBot, configure the admin list and archive path as needed in
 | `/nashelp` | Show help |
 | `/ls [path]` | List files |
 | `/tree [path] [depth]` | Show a directory tree; default depth 2, max depth 5 |
-| `/get file` | Send archived file; supports `category/file` |
+| `/get file` | Send archived file; supports bare names, `category/file`, and `Public/file` |
 | `/preview file` | Image preview or text excerpt |
 | `/search keyword` | Search files; use `tag:<tag>` for tags |
 | `/search --recent [limit]` | Show recent files; default 10, max 30 |
