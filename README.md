@@ -4,7 +4,7 @@
 
 ![:name](https://count.getloli.com/@astrbot_plugin_nas?name=astrbot_plugin_nas&theme=minecraft&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
 
-> 🚀 **AstrBot 私聊文件自动归档插件** — 基于 SQLite WAL 索引 + 文件系统 Single Source of Truth 架构，支持自动分类、去重、搜索、预览、标签、路径导入与索引修复。
+> 🚀 **AstrBot 私聊文件自动归档插件** — 基于 SQLite WAL 索引 + 文件系统 Single Source of Truth 架构，支持自动分类、去重、搜索、预览、标签、备注、路径导入、目录监控、批量操作、ZIP 导出与索引修复。
 
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -29,10 +29,14 @@ main.py          ← 插件入口 + 命令处理
 | 功能 | 说明 |
 |------|------|
 | 🗂️ 自动分类 | 按扩展名归档到 `Images/` `Videos/` `Music/` `Documents/` `Archives/` `Others/` |
-| 🔐 访问控制 | 支持管理员配置，群聊命令默认关闭 |
-| 🔍 搜索 | SQLite `LIKE` 文件名搜索，支持 `tag:标签` |
+| 🔐 访问控制 | 支持管理列表；可开启所有人只读访问，并限制到单一公开目录和每分钟速率 |
+| 🔍 搜索 | SQLite `LIKE` 文件名/备注搜索，支持 `tag:标签` |
 | 🏷️ 标签 | `/tag` 或 `/标签` 查看、添加、移除标签 |
+| 📝 备注 | `/note` 或 `/备注` 为文件写备注，搜索可命中备注内容 |
 | 📥 路径导入 | `/add` 或 `/添加` 可从任意本机路径或 NAS 挂载路径导入文件/目录 |
+| 👀 目录监控 | `/watch` 或 `/监控` 添加外部目录，可手动或定时扫描导入 |
+| 🧬 重复审计 | `/dups` 或 `/重复` 按内容哈希列出重复文件组 |
+| 📦 批量/导出 | `/batch` 批量打标签、移除标签、移动；`/export` 按选择器打包 ZIP |
 | 🖼️ 预览 | `/preview` 或 `/预览` 支持图片预览和文本摘要 |
 | 🧵 IO 隔离 | 大文件哈希、复制、移动、遍历和 SQLite 操作放入线程执行 |
 | 🛡️ 路径防护 | 归档后的读取/删除/移动都限制在 `save_root` 内 |
@@ -65,6 +69,9 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 |--------|--------|------|
 | `save_root` | `data/plugin_data/astrbot_plugin_nas` | 文件保存根目录，本地路径或 NAS 挂载路径 |
 | `admin_users` | `[]` | 管理员列表 |
+| `allow_all_users` | `false` | 开启所有人只读访问 |
+| `public_read_dir` | `Public` | 普通用户可查看和获取的目录，位于 `save_root` 内 |
+| `public_rate_limit_per_minute` | `10` | 普通用户每分钟只读命令上限，0 表示不限制 |
 | `allow_group_commands` | `false` | 是否允许群聊命令 |
 | `max_file_size` | `2048` | 单文件大小上限，单位 MB |
 | `auto_save_enabled` | `true` | 私聊收到文件时自动保存 |
@@ -73,6 +80,10 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 | `log_enabled` | `true` | 是否记录操作日志 |
 | `preview_text_chars` | `1200` | 文本预览最大字符数 |
 | `path_import_max_files` | `2000` | `/add` 单次目录导入上限 |
+| `watch_interval_minutes` | `0` | 监控目录自动导入间隔，0 表示关闭 |
+| `export_max_files` | `100` | `/export` 单次导出最大文件数 |
+| `batch_max_files` | `100` | `/batch` 单次处理最大文件数 |
+| `rebuild_busy_timeout_seconds` | `600` | 索引任务忙碌状态超时，避免异常状态一直显示重建中 |
 | `auto_repair_interval_minutes` | `0` | 后台一致性检查间隔，0 表示关闭 |
 | `categories` | `""` | 自定义分类 JSON |
 
@@ -88,16 +99,24 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 | `/preview 文件` | `/预览 文件` | 图片预览或文本摘要 |
 | `/search 关键词` | `/搜索 关键词` | 搜索文件；标签搜索用 `tag:标签` |
 | `/recent [数量]` | `/最近 [数量]` | 查看最近文件，默认 10，最大 30 |
+| `/tags 文件` | `/查看标签 文件` | 查看文件标签 |
+| `/note 文件 [备注]` | `/备注 文件 [备注]` | 查看或设置备注，备注为 `-` 表示清空 |
 | `/status` | `/状态`、`/空间` | 空间与状态统计 |
-| `/add 源路径 [分类]` | `/添加 源路径 [分类]` | 从任意本机/NAS路径导入文件或目录，管理员 |
-| `/tag 文件 [标签...]` | `/标签 文件 [标签...]` | 查看/添加/移除标签，`-标签` 表示移除，管理员 |
-| `/rm 文件` | `/删除 文件` | 删除文件，管理员，需 `/确认删除` |
+| `/add 源路径 [分类]` | `/添加 源路径 [分类]` | 从任意本机/NAS路径导入文件或目录 |
+| `/watch list|add|rm|run` | `/监控 列表|添加|删除|扫描` | 管理监控目录并手动扫描 |
+| `/dups [数量]` | `/重复 [数量]` | 查看重复文件组 |
+| `/batch 选择器 tag|untag|move ...` | `/批量 选择器 标签|移除标签|移动 ...` | 批量修改标签或移动文件 |
+| `/export 选择器 [文件名.zip]` | `/导出 选择器 [文件名.zip]` | 按选择器打包导出 ZIP |
+| `/tag 文件 [标签...]` | `/标签 文件 [标签...]` | 查看/添加/移除标签，`-标签` 表示移除 |
+| `/rm 文件` | `/删除 文件` | 删除文件，需 `/确认删除` |
 | `/确认删除` | - | 执行待确认删除 |
 | `/取消` | - | 取消待确认删除 |
-| `/mv 源 目标` | `/移动 源 目标` | 移动文件，管理员 |
-| `/rename 源 新名称` | `/重命名 源 新名称` | 重命名文件，管理员 |
-| `/repair` | `/修复` | 修复索引，管理员 |
-| `/vacuum` | `/整理` | 整理数据库，管理员 |
+| `/mv 源 目标` | `/移动 源 目标` | 移动文件 |
+| `/rename 源 新名称` | `/重命名 源 新名称` | 重命名文件 |
+| `/repair` | `/修复` | 修复索引 |
+| `/vacuum` | `/整理` | 整理数据库 |
+
+选择器支持 `tag:标签`、`category:分类`、`search:关键词`、`path:目录`。开启 `allow_all_users` 后，普通用户只能在 `public_read_dir` 内使用查看、搜索、预览、获取和查看标签/备注类命令。
 
 所有命令都必须带 `/`，避免普通聊天误触发。
 

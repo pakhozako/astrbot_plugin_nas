@@ -11,6 +11,26 @@
     "hint": "填写可管理 NAS 助手的用户 ID",
     "default": []
   },
+  "allow_all_users": {
+    "type": "bool",
+    "description": "允许所有人只读访问",
+    "hint": "开启后，非管理员只能使用查看、搜索、预览和获取文件类命令",
+    "default": false
+  },
+  "public_read_dir": {
+    "type": "string",
+    "description": "普通用户可访问目录",
+    "hint": "相对 save_root 的目录名或 save_root 内绝对路径；普通用户只能查看或获取此目录下文件",
+    "default": "Public"
+  },
+  "public_rate_limit_per_minute": {
+    "type": "int",
+    "description": "普通用户每分钟命令上限",
+    "hint": "0 表示不限制；仅作用于 allow_all_users 开启后的普通用户只读命令",
+    "default": 10,
+    "minimum": 0,
+    "maximum": 120
+  },
   "allow_group_commands": {
     "type": "bool",
     "description": "允许群聊命令",
@@ -57,10 +77,40 @@
   "path_import_max_files": {
     "type": "int",
     "description": "路径导入单次最大文件数",
-    "hint": "/addpath 可从任意本机路径或 NAS 挂载路径导入，目录过大时按此上限截断",
+    "hint": "/add 可从任意本机路径或 NAS 挂载路径导入，目录过大时按此上限截断",
     "default": 2000,
     "minimum": 1,
     "maximum": 100000
+  },
+  "watch_interval_minutes": {
+    "type": "int",
+    "description": "监控目录自动导入间隔 (分钟)",
+    "hint": "0 表示关闭；开启后按 /watch 添加的目录定期导入新增文件",
+    "default": 0,
+    "minimum": 0,
+    "maximum": 10080
+  },
+  "export_max_files": {
+    "type": "int",
+    "description": "单次导出最大文件数",
+    "default": 100,
+    "minimum": 1,
+    "maximum": 5000
+  },
+  "batch_max_files": {
+    "type": "int",
+    "description": "单次批量操作最大文件数",
+    "default": 100,
+    "minimum": 1,
+    "maximum": 5000
+  },
+  "rebuild_busy_timeout_seconds": {
+    "type": "int",
+    "description": "索引任务忙碌状态超时 (秒)",
+    "hint": "超过此时间后允许新的 /repair 接管，避免异常状态一直显示重建中",
+    "default": 600,
+    "minimum": 60,
+    "maximum": 86400
   },
   "auto_repair_interval_minutes": {
     "type": "int",
