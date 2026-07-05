@@ -15,9 +15,12 @@
 ## 🏗️ 项目结构
 
 ```
-main.py          ← 插件入口 + 命令处理
-├── index.py     ← SQLite 索引层
-└── utils.py     ← 工具函数 + 分类器
+main.py              ← 插件入口 + AstrBot Handler
+├── config.py        ← 配置归一化
+├── command_args.py  ← 命令文本解析
+├── runtime_state.py ← 限流与索引任务状态
+├── index.py         ← SQLite 索引层
+└── utils.py         ← 工具函数 + 分类器
 ```
 
 **设计原则：** 文件系统是真实数据源，SQLite 是索引缓存。删除 `files.db` 后重启或执行 `/repair` 可从归档目录重新生成索引。

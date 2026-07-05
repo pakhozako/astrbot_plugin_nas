@@ -15,9 +15,12 @@
 ## 🏗️ Project Structure
 
 ```
-main.py          ← Plugin entry + command handling
-├── index.py     ← SQLite index layer
-└── utils.py     ← Utilities + classifier
+main.py              ← Plugin entry + AstrBot handlers
+├── config.py        ← Configuration normalization
+├── command_args.py  ← Command text parsing
+├── runtime_state.py ← Rate limit and index task state
+├── index.py         ← SQLite index layer
+└── utils.py         ← Utilities + classifier
 ```
 
 **Design principle:** the file system is the source of truth and SQLite is a rebuildable index cache. Delete `files.db`, restart, or run `/repair` to rebuild the index from archived files.

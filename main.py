@@ -5,13 +5,10 @@ NAS 助手 - AstrBot 私聊文件自动归档插件 v2.3.0
 
 import asyncio
 import json
-import math
 import os
-import shlex
 import shutil
 import time
 import zipfile
-from collections import deque
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -19,8 +16,18 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.message_components import File, Image, Video
 from astrbot.api.star import Context, Star, register
 
+from .command_args import (
+    command_payload,
+    message_text,
+    parse_args,
+    parse_command_args,
+    split_command_args,
+    strip_quotes,
+)
+from .config import NASSettings
 from .utils import file_hash, file_fingerprint, format_size, FileClassifier
 from .index import FileIndex
+from .runtime_state import RateLimiter, RebuildState
 
 
 @register("NAS 助手", "pakhozako", "私聊文件自动归档到本地磁盘/NAS", "v2.3.0")
@@ -28,35 +35,30 @@ class NASPlugin(Star):
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        cfg = config or {}
-        save_root = cfg.get("save_root") or str(Path("data/plugin_data/astrbot_plugin_nas"))
-        self.root = Path(save_root).resolve()
-        self.admins = set(str(u) for u in cfg.get("admin_users", []))
-        self.allow_all_users = bool(cfg.get("allow_all_users", False))
-        self.allow_group_commands = bool(cfg.get("allow_group_commands", False))
-        self.max_size = int(cfg.get("max_file_size", 2048)) * 1024 * 1024
-        self.auto_save = bool(cfg.get("auto_save_enabled", True))
-        self.dedup = bool(cfg.get("dedup_enabled", True))
-        self.confirm_ttl = int(cfg.get("delete_confirm_ttl", 120))
-        self.log_enabled = bool(cfg.get("log_enabled", True))
-        self.preview_text_chars = int(cfg.get("preview_text_chars", 1200))
-        self.path_import_max_files = int(cfg.get("path_import_max_files", 2000))
-        self.auto_repair_interval = int(cfg.get("auto_repair_interval_minutes", 0))
-        self.watch_interval = int(cfg.get("watch_interval_minutes", 0))
-        self.export_max_files = int(cfg.get("export_max_files", 100))
-        self.batch_max_files = int(cfg.get("batch_max_files", 100))
-        self.public_rate_limit = int(cfg.get("public_rate_limit_per_minute", 10))
-        self.rebuild_busy_timeout = int(cfg.get("rebuild_busy_timeout_seconds", 600))
-        self.public_read_dir = str(cfg.get("public_read_dir") or "Public")
+        settings = NASSettings.from_config(config)
+        self.settings = settings
+        self.root = settings.root
+        self.admins = settings.admin_users
+        self.allow_all_users = settings.allow_all_users
+        self.allow_group_commands = settings.allow_group_commands
+        self.max_size = settings.max_file_size_bytes
+        self.auto_save = settings.auto_save_enabled
+        self.dedup = settings.dedup_enabled
+        self.confirm_ttl = settings.delete_confirm_ttl
+        self.log_enabled = settings.log_enabled
+        self.preview_text_chars = settings.preview_text_chars
+        self.path_import_max_files = settings.path_import_max_files
+        self.auto_repair_interval = settings.auto_repair_interval_minutes
+        self.watch_interval = settings.watch_interval_minutes
+        self.export_max_files = settings.export_max_files
+        self.batch_max_files = settings.batch_max_files
+        self.public_read_dir = settings.public_read_dir
         self.public_read_root = self._resolve_public_root(self.public_read_dir)
 
-        self._load_categories(str(cfg.get("categories", "") or ""))
+        self._load_categories(settings.categories_raw)
         self._delete_pending = {}
-        self._public_rate_hits: dict[str, deque] = {}
-        self._rebuilding = False
-        self._rebuild_started_at = 0.0
-        self._rebuild_reason = ""
-        self._rebuild_token = 0
+        self._public_rate_limiter = RateLimiter(settings.public_rate_limit_per_minute)
+        self._rebuild_state = RebuildState(settings.rebuild_busy_timeout_seconds, logger)
         self._file_lock = asyncio.Lock()
         self._maintenance_task = None
         self._last_repair_run = 0.0
@@ -161,17 +163,7 @@ class NASPlugin(Star):
         return "没有权限使用 NAS 助手"
 
     def _public_rate_wait(self, uid: str) -> int:
-        if self.public_rate_limit <= 0:
-            return 0
-        now = time.time()
-        window = 60.0
-        hits = self._public_rate_hits.setdefault(uid, deque())
-        while hits and now - hits[0] >= window:
-            hits.popleft()
-        if len(hits) >= self.public_rate_limit:
-            return max(1, math.ceil(window - (now - hits[0])))
-        hits.append(now)
-        return 0
+        return self._public_rate_limiter.wait_seconds(uid)
 
     def _resolve_public_root(self, raw: str) -> Path:
         raw = self._strip_quotes(str(raw or "Public")).strip() or "Public"
@@ -238,42 +230,16 @@ class NASPlugin(Star):
             self._delete_pending.pop(uid, None)
 
     def _begin_rebuild(self, reason: str, allow_stale: bool = False) -> int | None:
-        now = time.time()
-        if self._rebuilding:
-            elapsed = int(now - self._rebuild_started_at) if self._rebuild_started_at else 0
-            stale = elapsed >= max(60, self.rebuild_busy_timeout)
-            if not allow_stale or not stale:
-                return None
-            logger.warning(f"[NAS] 索引任务状态超时，接管新任务: {self._rebuild_reason} 已运行 {elapsed} 秒")
-        self._rebuild_token += 1
-        self._rebuilding = True
-        self._rebuild_started_at = now
-        self._rebuild_reason = reason
-        return self._rebuild_token
+        return self._rebuild_state.begin(reason, allow_stale)
 
     def _finish_rebuild(self, token: int | None):
-        if token is not None and token == self._rebuild_token:
-            self._rebuilding = False
-            self._rebuild_started_at = 0.0
-            self._rebuild_reason = ""
+        self._rebuild_state.finish(token)
 
     def _rebuild_busy_message(self) -> str | None:
-        if not self._rebuilding:
-            return None
-        elapsed = int(time.time() - self._rebuild_started_at) if self._rebuild_started_at else 0
-        if elapsed >= max(60, self.rebuild_busy_timeout):
-            logger.warning(f"[NAS] 索引任务状态超时，自动释放: {self._rebuild_reason} 已运行 {elapsed} 秒")
-            self._finish_rebuild(self._rebuild_token)
-            return None
-        reason = self._rebuild_reason or "重建"
-        return f"NAS索引{reason}中，已运行 {elapsed} 秒，请稍后再试"
+        return self._rebuild_state.busy_message()
 
     def _rebuild_status_text(self) -> str:
-        if not self._rebuilding:
-            return "正常"
-        elapsed = int(time.time() - self._rebuild_started_at) if self._rebuild_started_at else 0
-        reason = self._rebuild_reason or "重建"
-        return f"{reason}中 ({elapsed}秒)"
+        return self._rebuild_state.status_text()
 
     # ---------- 启动、后台维护 ----------
 
@@ -347,43 +313,23 @@ class NASPlugin(Star):
     # ---------- 路径与文件工具 ----------
 
     def _parse_args(self, text: str) -> list[str]:
-        try:
-            return shlex.split(text, posix=False)
-        except ValueError:
-            return text.strip().split()
+        return parse_args(text)
 
     def _message_text(self, event: AstrMessageEvent) -> str:
-        getter = getattr(event, "get_message_str", None)
-        if callable(getter):
-            try:
-                return str(getter() or "").strip()
-            except Exception:
-                pass
-        return str(getattr(event, "message_str", "") or "").strip()
+        return message_text(event)
 
     def _command_payload(self, event: AstrMessageEvent, commands: set[str]) -> str:
-        text = self._message_text(event)
-        if not text:
-            return ""
-        parts = text.split(maxsplit=1)
-        head = parts[0].lstrip("/")
-        if head in commands:
-            return parts[1].strip() if len(parts) > 1 else ""
-        return text
+        return command_payload(event, commands)
 
     def _split_command_args(self, event: AstrMessageEvent, commands: set[str], maxsplit: int = -1) -> list[str]:
-        payload = self._command_payload(event, commands)
-        return payload.split(maxsplit=maxsplit) if payload else []
+        return split_command_args(event, commands, maxsplit)
 
     def _parse_command_args(self, event: AstrMessageEvent, commands: set[str]) -> list[str]:
-        return self._parse_args(self._command_payload(event, commands))
+        return parse_command_args(event, commands)
 
     @staticmethod
     def _strip_quotes(text: str) -> str:
-        text = text.strip()
-        if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-            return text[1:-1]
-        return text
+        return strip_quotes(text)
 
     def _info_from_path(self, path: Path) -> dict:
         st = path.stat()
