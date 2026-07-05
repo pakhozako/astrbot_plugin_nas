@@ -9,6 +9,7 @@ import shutil
 import time
 import zipfile
 from pathlib import Path
+from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
@@ -740,6 +741,113 @@ class FileServiceMixin:
         except Exception:
             return path
 
+    def _schedule_recall(self, bot: Any, message_ids: list[Any], delay_seconds: int, routing_params: dict[str, Any]) -> None:
+        if not message_ids or delay_seconds <= 0:
+            return
+        task = asyncio.create_task(
+            self._delete_messages_later(bot, message_ids, delay_seconds, routing_params),
+        )
+        tasks = getattr(self, "_recall_tasks", None)
+        if isinstance(tasks, set):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+
+    @staticmethod
+    def _extract_message_ids(result: Any) -> list[Any]:
+        if isinstance(result, dict):
+            value = result.get("message_id")
+            return [value] if value is not None else []
+        if isinstance(result, list):
+            ids = []
+            for item in result:
+                ids.extend(FileServiceMixin._extract_message_ids(item))
+            return ids
+        return []
+
+    async def _delete_messages_later(
+        self,
+        bot: Any,
+        message_ids: list[Any],
+        delay_seconds: int,
+        routing_params: dict[str, Any],
+    ) -> None:
+        await asyncio.sleep(delay_seconds)
+        for message_id in message_ids:
+            try:
+                if routing_params:
+                    await bot.call_action("delete_msg", message_id=message_id, **routing_params)
+                else:
+                    await bot.call_action("delete_msg", message_id=message_id)
+            except Exception as first_error:
+                if not routing_params:
+                    logger.warning(f"[NAS] 自动撤回文件消息失败: {first_error}")
+                    continue
+                try:
+                    await bot.call_action("delete_msg", message_id=message_id)
+                except Exception as e:
+                    logger.warning(f"[NAS] 自动撤回文件消息失败: {e}")
+
+    async def _send_file_with_public_recall(
+        self,
+        event: AstrMessageEvent,
+        file_path: Path,
+        file_name: str,
+        delay_seconds: int,
+    ) -> tuple[bool, bool]:
+        bot = getattr(event, "bot", None)
+        if bot is None:
+            return False, False
+
+        try:
+            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+                AiocqhttpMessageEvent,
+            )
+
+            payload = await AiocqhttpMessageEvent._from_segment_to_dict(
+                File(name=file_name, file=str(file_path)),
+            )
+        except Exception as e:
+            logger.warning(f"[NAS] 构建可撤回文件消息失败: {e}")
+            return False, False
+
+        is_group = bool(event.get_group_id())
+        session_id = event.get_group_id() if is_group else event.get_sender_id()
+        if not str(session_id).isdigit():
+            return False, False
+
+        routing_params = {}
+        self_id = event.get_self_id()
+        raw_event = getattr(event.message_obj, "raw_message", None)
+        if raw_event is not None and hasattr(raw_event, "get"):
+            self_id = raw_event.get("self_id") or self_id
+        if self_id:
+            routing_params["self_id"] = self_id
+
+        try:
+            if is_group:
+                result = await bot.send_group_msg(
+                    group_id=int(session_id),
+                    message=[payload],
+                    **routing_params,
+                )
+            else:
+                result = await bot.send_private_msg(
+                    user_id=int(session_id),
+                    message=[payload],
+                    **routing_params,
+                )
+        except Exception as e:
+            logger.warning(f"[NAS] 可撤回文件发送失败，回退普通发送: {e}")
+            return False, False
+
+        message_ids = self._extract_message_ids(result)
+        recalled = bool(message_ids)
+        if recalled:
+            self._schedule_recall(bot, message_ids, delay_seconds, routing_params)
+        else:
+            logger.warning("[NAS] 文件已发送，但平台未返回 message_id，无法自动撤回")
+        return True, recalled
+
     async def _send_file(self, event: AstrMessageEvent, info: dict):
         file_path = Path(info["path"])
         file_size = file_path.stat().st_size
@@ -747,6 +855,19 @@ class FileServiceMixin:
             yield event.plain_result(f"文件过大: {format_size(file_size)}")
             return
         self._log_info(f"[NAS] SEND | {event.get_sender_id()} | {info['category']}/{info['name']}")
+        recall_minutes = int(getattr(self, "public_file_recall_minutes", 0) or 0)
+        should_recall = recall_minutes > 0 and self._is_public_user(str(event.get_sender_id()))
+        if should_recall:
+            sent, recalled = await self._send_file_with_public_recall(
+                event,
+                file_path,
+                info["name"],
+                recall_minutes * 60,
+            )
+            if sent:
+                suffix = f"，将在 {recall_minutes} 分钟后自动撤回" if recalled else "，但当前平台未返回消息 ID，无法自动撤回"
+                yield event.plain_result(f"已发送: {info['name']} ({format_size(file_size)}){suffix}")
+                return
         try:
             yield event.chain_result([File(name=info["name"], file=str(file_path))])
         except (asyncio.TimeoutError, Exception) as e:

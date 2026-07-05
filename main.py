@@ -54,10 +54,12 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         self.batch_max_files = settings.batch_max_files
         self.seven_zip_path = settings.seven_zip_path
         self.public_read_dir = settings.public_read_dir
+        self.public_file_recall_minutes = settings.public_file_recall_minutes
         self.public_read_root = self._resolve_public_root(self.public_read_dir)
 
         self._load_categories(settings.categories_raw)
         self._delete_pending = {}
+        self._recall_tasks = set()
         self._public_rate_limiter = RateLimiter(settings.public_rate_limit_per_minute)
         self._rebuild_state = RebuildState(settings.rebuild_busy_timeout_seconds, logger)
         self._file_lock = asyncio.Lock()
@@ -189,6 +191,9 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
                 await self._maintenance_task
             except asyncio.CancelledError:
                 pass
+        for task in list(self._recall_tasks):
+            task.cancel()
+        self._recall_tasks.clear()
 
     # ---------- 路径与文件工具 ----------
 
@@ -1055,6 +1060,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             f"  后台检查: {self.auto_repair_interval} 分钟" if self.auto_repair_interval > 0 else "  后台检查: 关闭",
             f"  监控导入: {self.watch_interval} 分钟" if self.watch_interval > 0 else "  监控导入: 关闭",
             f"  公开目录: {self.public_read_root.relative_to(self.root)}" if self.allow_all_users else "  公开目录: 关闭",
+            f"  普通用户文件撤回: {self.public_file_recall_minutes} 分钟" if self.public_file_recall_minutes > 0 else "  普通用户文件撤回: 关闭",
             "",
             f"文件统计 (共 {stats['total_count']} 个, {format_size(stats['total_size'])})",
         ]

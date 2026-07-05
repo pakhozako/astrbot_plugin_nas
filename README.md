@@ -79,6 +79,7 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 | `allow_all_users` | `false` | 开启所有人只读访问 |
 | `public_read_dir` | `Public` | 普通用户可查看和获取的目录，位于 `save_root` 内 |
 | `public_rate_limit_per_minute` | `10` | 普通用户每分钟只读命令上限，0 表示不限制 |
+| `public_file_recall_minutes` | `0` | 普通用户 `/get` 文件消息自动撤回延迟，0 表示关闭 |
 | `allow_group_commands` | `false` | 是否允许群聊命令 |
 | `max_file_size` | `2048` | 单文件大小上限，单位 MB |
 | `auto_save_enabled` | `true` | 私聊收到文件时自动保存 |

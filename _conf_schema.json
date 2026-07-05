@@ -31,6 +31,14 @@
     "minimum": 0,
     "maximum": 120
   },
+  "public_file_recall_minutes": {
+    "type": "int",
+    "description": "普通用户获取文件后自动撤回 (分钟)",
+    "hint": "0 表示关闭；仅作用于 allow_all_users 开启后的普通用户 /get 文件消息，管理员不受影响",
+    "default": 0,
+    "minimum": 0,
+    "maximum": 1440
+  },
   "allow_group_commands": {
     "type": "bool",
     "description": "允许群聊命令",

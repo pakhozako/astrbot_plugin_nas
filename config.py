@@ -24,6 +24,7 @@ class NASSettings:
     export_max_files: int
     batch_max_files: int
     public_rate_limit_per_minute: int
+    public_file_recall_minutes: int
     rebuild_busy_timeout_seconds: int
     public_read_dir: str
     seven_zip_path: str
@@ -50,6 +51,7 @@ class NASSettings:
             export_max_files=int(cfg.get("export_max_files", 100)),
             batch_max_files=int(cfg.get("batch_max_files", 100)),
             public_rate_limit_per_minute=int(cfg.get("public_rate_limit_per_minute", 10)),
+            public_file_recall_minutes=max(0, int(cfg.get("public_file_recall_minutes", 0))),
             rebuild_busy_timeout_seconds=int(cfg.get("rebuild_busy_timeout_seconds", 600)),
             public_read_dir=str(cfg.get("public_read_dir") or "Public"),
             seven_zip_path=str(cfg.get("seven_zip_path") or r"D:\7-Zip\7z.exe"),
