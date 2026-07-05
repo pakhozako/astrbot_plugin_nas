@@ -31,13 +31,18 @@ def format_size(size: int) -> str:
 # ==================== 文件分类器 ====================
 
 class FileClassifier:
-    CATEGORIES = {
+    DEFAULT_CATEGORIES = {
         "Images":    {"jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico", "tiff", "heic", "heif"},
         "Videos":    {"mp4", "mkv", "avi", "mov", "flv", "wmv", "webm", "ts", "m4v"},
         "Music":     {"mp3", "flac", "wav", "aac", "ogg", "wma", "m4a", "opus"},
         "Documents": {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "json", "xml", "yaml", "yml"},
         "Archives":  {"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst"},
     }
+    CATEGORIES = {k: set(v) for k, v in DEFAULT_CATEGORIES.items()}
+
+    @classmethod
+    def reset_categories(cls):
+        cls.CATEGORIES = {k: set(v) for k, v in cls.DEFAULT_CATEGORIES.items()}
 
     @classmethod
     def get_category(cls, filename: str) -> str:

@@ -1,9 +1,9 @@
 name: "astrbot_plugin_nas"
 display_name: "NAS 助手"
 short_desc: "私聊文件自动归档到本地/NAS"
-desc: "私聊文件自动归档到本地磁盘/NAS，支持自动分类、文件管理、搜索、去重、删除二次确认"
-help: "指令：nas / ls / tree / get / search / recent / rm / rename / du / repair"
-version: "v2.1.0"
+desc: "私聊文件自动归档到本地磁盘/NAS插件，支持自动分类、搜索、预览、标签、路径导入和索引修复"
+help: "帮助：/nas帮助 或 /nashelp；常用：/ls /get /preview /search /recent /status；管理：/add /tag /rm /mv /rename /repair"
+version: "v2.2.0"
 author: "pakhozako"
 repo: "https://github.com/pakhozako/astrbot_plugin_nas"
 support_platforms:

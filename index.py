@@ -1,4 +1,4 @@
-"""SQLite 索引层：文件系统是真相源，SQLite 是缓存"""
+"""SQLite 索引层：文件系统是真相源，SQLite 是缓存。"""
 
 import os
 import time
@@ -17,10 +17,13 @@ class FileIndex:
 
     def _init_db(self):
         db = Path(self.db_path)
+        db.parent.mkdir(parents=True, exist_ok=True)
         if db.exists() and db.stat().st_size > 0:
             try:
                 with sqlite3.connect(self.db_path) as conn:
-                    conn.execute("PRAGMA integrity_check")
+                    result = conn.execute("PRAGMA integrity_check").fetchone()
+                    if not result or result[0].lower() != "ok":
+                        raise sqlite3.DatabaseError(f"integrity_check={result[0] if result else None}")
             except Exception:
                 import shutil
                 ts = time.strftime("%Y%m%d_%H%M%S")
@@ -42,39 +45,82 @@ class FileIndex:
     def _create_table(self, conn):
         conn.execute("""
             CREATE TABLE IF NOT EXISTS files (
-                path TEXT PRIMARY KEY, hash TEXT NOT NULL, name TEXT NOT NULL,
-                size INTEGER NOT NULL, mtime INTEGER NOT NULL,
-                category TEXT NOT NULL, created_at INTEGER NOT NULL
+                path TEXT PRIMARY KEY,
+                hash TEXT NOT NULL,
+                name TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                mtime INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                owner TEXT NOT NULL DEFAULT '',
+                source_path TEXT NOT NULL DEFAULT ''
             )
         """)
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
-        pk_col = next((row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall() if row[5]), None)
+        table_info = conn.execute("PRAGMA table_info(files)").fetchall()
+        cols = {row[1] for row in table_info}
+        pk_col = next((row[1] for row in table_info if row[5]), None)
         if pk_col == "hash":
             conn.execute("ALTER TABLE files RENAME TO files_old")
             conn.execute("""
                 CREATE TABLE files (
-                    path TEXT PRIMARY KEY, hash TEXT NOT NULL, name TEXT NOT NULL,
-                    size INTEGER NOT NULL, mtime INTEGER NOT NULL,
-                    category TEXT NOT NULL, created_at INTEGER NOT NULL
+                    path TEXT PRIMARY KEY,
+                    hash TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    mtime INTEGER NOT NULL,
+                    category TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    owner TEXT NOT NULL DEFAULT '',
+                    source_path TEXT NOT NULL DEFAULT ''
                 )
             """)
             old_cols = {row[1] for row in conn.execute("PRAGMA table_info(files_old)").fetchall()}
             old_mtime = "mtime" if "mtime" in old_cols else "0"
+            old_owner = "owner" if "owner" in old_cols else "''"
+            old_source = "source_path" if "source_path" in old_cols else "''"
             conn.execute(f"""
-                INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at)
-                SELECT path, hash, name, size, {old_mtime}, category, created_at FROM files_old
+                INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at, owner, source_path)
+                SELECT path, hash, name, size, {old_mtime}, category, created_at, {old_owner}, {old_source}
+                FROM files_old
             """)
             conn.execute("DROP TABLE files_old")
             cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
         if "mtime" not in cols:
             conn.execute("ALTER TABLE files ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0")
+        if "owner" not in cols:
+            conn.execute("ALTER TABLE files ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
+        if "source_path" not in cols:
+            conn.execute("ALTER TABLE files ADD COLUMN source_path TEXT NOT NULL DEFAULT ''")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tags (
+                file_path TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(file_path, tag)
+            )
+        """)
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hash ON files(hash)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_owner ON files(owner)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tag ON tags(tag)")
 
     @staticmethod
     def _rows_to_dicts(rows):
-        return [{"path": r[0], "name": r[1], "size": r[2], "category": r[3]} for r in rows]
+        return [
+            {
+                "path": r[0],
+                "name": r[1],
+                "size": r[2],
+                "category": r[3],
+                "created_at": r[4],
+                "owner": r[5],
+                "source_path": r[6],
+            }
+            for r in rows
+        ]
 
     @staticmethod
     def _iter_category_files(root: Path):
@@ -97,49 +143,82 @@ class FileIndex:
                     elif entry.is_file():
                         yield cat, entry
 
+    def _select_rows(self, conn, where: str = "", params: tuple = (), suffix: str = "") -> list:
+        sql = """
+            SELECT path, name, size, category, created_at, owner, source_path
+            FROM files
+        """
+        if where:
+            sql += f" WHERE {where}"
+        if suffix:
+            sql += f" {suffix}"
+        return self._rows_to_dicts(conn.execute(sql, params).fetchall())
+
     def has_hash(self, h: str) -> str | None:
         with self._lock, sqlite3.connect(self.db_path) as conn:
             row = conn.execute("SELECT path FROM files WHERE hash=?", (h,)).fetchone()
             return row[0] if row else None
 
-    def add(self, h: str, path: str, name: str, size: int, mtime: int, category: str):
+    def add(
+        self,
+        h: str,
+        path: str,
+        name: str,
+        size: int,
+        mtime: int,
+        category: str,
+        owner: str = "",
+        source_path: str = "",
+    ):
         with self._lock, sqlite3.connect(self.db_path) as conn:
+            old = conn.execute("SELECT created_at FROM files WHERE path=?", (path,)).fetchone()
+            created_at = old[0] if old else int(time.time())
             conn.execute(
-                "INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (path, h, name, size, mtime, category, int(time.time()))
+                """
+                INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at, owner, source_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (path, h, name, size, mtime, category, created_at, owner or "", source_path or ""),
             )
             conn.commit()
 
     def remove(self, path: str):
         with self._lock, sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM files WHERE path=?", (path,))
+            conn.execute("DELETE FROM tags WHERE file_path=?", (path,))
             conn.commit()
 
     def move(self, old_path: str, h: str, new_path: str, name: str, size: int, mtime: int, category: str):
         with self._lock, sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT created_at, owner, source_path FROM files WHERE path=?",
+                (old_path,),
+            ).fetchone()
+            created_at, owner, source_path = (row if row else (int(time.time()), "", ""))
             conn.execute(
-                "INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (new_path, h, name, size, mtime, category, int(time.time()))
+                """
+                INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at, owner, source_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (new_path, h, name, size, mtime, category, created_at, owner, source_path),
             )
             if new_path != old_path:
                 conn.execute("DELETE FROM files WHERE path=?", (old_path,))
+                conn.execute("UPDATE tags SET file_path=? WHERE file_path=?", (new_path, old_path))
             conn.commit()
 
     def search(self, keyword: str) -> list:
         with self._lock, sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT path, name, size, category FROM files WHERE name LIKE ?",
-                (f"%{keyword}%",)
-            ).fetchall()
-            return self._rows_to_dicts(rows)
+            return self._select_rows(conn, "name LIKE ?", (f"%{keyword}%",), "ORDER BY created_at DESC")
 
     def find_by_name(self, name: str) -> list:
         with self._lock, sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT path, name, size, category FROM files WHERE name=?",
-                (name,)
-            ).fetchall()
-            return self._rows_to_dicts(rows)
+            return self._select_rows(conn, "name=?", (name,), "ORDER BY created_at DESC")
+
+    def find_by_path(self, path: str) -> dict | None:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            rows = self._select_rows(conn, "path=?", (path,))
+            return rows[0] if rows else None
 
     def get_stats(self) -> dict:
         with self._lock, sqlite3.connect(self.db_path) as conn:
@@ -153,15 +232,55 @@ class FileIndex:
 
     def recent(self, limit: int) -> list:
         with self._lock, sqlite3.connect(self.db_path) as conn:
+            return self._select_rows(conn, suffix="ORDER BY created_at DESC, mtime DESC LIMIT ?", params=(limit,))
+
+    def add_tags(self, path: str, tags: list[str]):
+        now = int(time.time())
+        cleaned = sorted({t.strip().lower() for t in tags if t.strip()})
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            for tag in cleaned:
+                conn.execute(
+                    "INSERT OR IGNORE INTO tags(file_path, tag, created_at) VALUES (?, ?, ?)",
+                    (path, tag, now),
+                )
+            conn.commit()
+            return cleaned
+
+    def remove_tags(self, path: str, tags: list[str]):
+        cleaned = sorted({t.strip().lower() for t in tags if t.strip()})
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            for tag in cleaned:
+                conn.execute("DELETE FROM tags WHERE file_path=? AND tag=?", (path, tag))
+            conn.commit()
+            return cleaned
+
+    def list_tags(self, path: str) -> list[str]:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT tag FROM tags WHERE file_path=? ORDER BY tag", (path,)).fetchall()
+            return [r[0] for r in rows]
+
+    def search_by_tag(self, tag: str) -> list:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT path, name, size, category FROM files ORDER BY created_at DESC, mtime DESC LIMIT ?",
-                (limit,)
+                """
+                SELECT f.path, f.name, f.size, f.category, f.created_at, f.owner, f.source_path
+                FROM files f
+                JOIN tags t ON t.file_path = f.path
+                WHERE t.tag=?
+                ORDER BY f.created_at DESC
+                """,
+                (tag.strip().lower(),),
             ).fetchall()
             return self._rows_to_dicts(rows)
 
     def repair_from_fs(self, root: Path) -> dict:
         with self._lock, sqlite3.connect(self.db_path) as conn:
-            indexed_paths = {row[0] for row in conn.execute("SELECT path FROM files").fetchall()}
+            old_rows = {
+                row[0]: row
+                for row in conn.execute(
+                    "SELECT path, size, mtime, hash, created_at, owner, source_path FROM files"
+                ).fetchall()
+            }
             fs_paths = set()
             added = 0
             updated = 0
@@ -172,11 +291,17 @@ class FileIndex:
                     path = str(f)
                     st = f.stat()
                     h = file_hash(path)
-                    row = conn.execute("SELECT size, mtime, hash, created_at FROM files WHERE path=?", (path,)).fetchone()
-                    changed = row is None or row[:3] != (st.st_size, int(st.st_mtime), h)
+                    row = old_rows.get(path)
+                    changed = row is None or row[1:4] != (st.st_size, int(st.st_mtime), h)
+                    created_at = now if row is None else row[4]
+                    owner = "" if row is None else row[5]
+                    source_path = "" if row is None else row[6]
                     conn.execute(
-                        "INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (path, h, f.name, st.st_size, int(st.st_mtime), cat, now if changed else row[3])
+                        """
+                        INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at, owner, source_path)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (path, h, f.name, st.st_size, int(st.st_mtime), cat, created_at, owner, source_path),
                     )
                     fs_paths.add(path)
                     if row is None:
@@ -187,8 +312,9 @@ class FileIndex:
                     continue
 
             removed = 0
-            for path in indexed_paths - fs_paths:
+            for path in set(old_rows) - fs_paths:
                 conn.execute("DELETE FROM files WHERE path=?", (path,))
+                conn.execute("DELETE FROM tags WHERE file_path=?", (path,))
                 removed += 1
 
             conn.commit()
@@ -197,8 +323,17 @@ class FileIndex:
     def rebuild_from_fs(self, root: Path):
         with self._lock, sqlite3.connect(self.db_path) as conn:
             existing = {}
-            for row in conn.execute("SELECT path, hash, size, mtime FROM files").fetchall():
-                existing[row[0]] = (row[1], row[2], row[3])
+            for row in conn.execute(
+                "SELECT path, hash, size, mtime, created_at, owner, source_path FROM files"
+            ).fetchall():
+                existing[row[0]] = {
+                    "hash": row[1],
+                    "size": row[2],
+                    "mtime": row[3],
+                    "created_at": row[4],
+                    "owner": row[5],
+                    "source_path": row[6],
+                }
 
             fs_entries = {}
             for cat, f in self._iter_category_files(root):
@@ -213,8 +348,8 @@ class FileIndex:
 
             for path, (size, mtime, cat, name) in fs_entries.items():
                 old = existing.get(path)
-                if old and old[1] == size and old[2] == mtime:
-                    h = old[0]
+                if old and old["size"] == size and old["mtime"] == mtime:
+                    h = old["hash"]
                 else:
                     try:
                         h = file_hash(path)
@@ -222,9 +357,26 @@ class FileIndex:
                         continue
 
                 conn.execute(
-                    "INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (path, h, name, size, mtime, cat, now)
+                    """
+                    INSERT OR REPLACE INTO files(path, hash, name, size, mtime, category, created_at, owner, source_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        path,
+                        h,
+                        name,
+                        size,
+                        mtime,
+                        cat,
+                        old["created_at"] if old else now,
+                        old["owner"] if old else "",
+                        old["source_path"] if old else "",
+                    ),
                 )
+
+            missing = set(existing) - set(fs_entries)
+            for path in missing:
+                conn.execute("DELETE FROM tags WHERE file_path=?", (path,))
 
             conn.commit()
             return len(fs_entries)
