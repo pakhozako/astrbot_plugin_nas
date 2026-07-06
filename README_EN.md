@@ -126,6 +126,8 @@ After restarting AstrBot, configure the admin list and archive path as needed in
 
 Selectors support `tag:<tag>`, `category:<category>`, `search:<keyword>`, and `path:<directory>`. When `allow_all_users` is enabled, ordinary users can only browse, search, preview, fetch, and view tags/notes inside `public_read_dir`.
 
+Quote file names or paths that contain spaces, for example `/get "my file.zip"`.
+
 All commands require `/` to avoid accidental triggers in normal chat.
 
 ---

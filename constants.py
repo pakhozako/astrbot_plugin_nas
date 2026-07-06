@@ -1,7 +1,7 @@
 """Shared constants for the NAS plugin."""
 
-PLUGIN_VERSION = "v2.3.2"
-PLUGIN_DISPLAY_VERSION = "v2.3.2"
+PLUGIN_VERSION = "v2.3.3"
+PLUGIN_DISPLAY_VERSION = "v2.3.3"
 
 INTERNAL_DIRS = {".previews", ".exports"}
 INTERNAL_FILES = {"files.db", "files.db-wal", "files.db-shm"}

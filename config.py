@@ -6,6 +6,18 @@ from pathlib import Path
 from astrbot.api import AstrBotConfig
 
 
+def _to_int(value, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
 @dataclass(frozen=True)
 class NASSettings:
     root: Path
@@ -39,20 +51,20 @@ class NASSettings:
             admin_users={str(u) for u in cfg.get("admin_users", [])},
             allow_all_users=bool(cfg.get("allow_all_users", False)),
             allow_group_commands=bool(cfg.get("allow_group_commands", False)),
-            max_file_size_bytes=int(cfg.get("max_file_size", 2048)) * 1024 * 1024,
+            max_file_size_bytes=_to_int(cfg.get("max_file_size", 2048), 2048, 1) * 1024 * 1024,
             auto_save_enabled=bool(cfg.get("auto_save_enabled", True)),
             dedup_enabled=bool(cfg.get("dedup_enabled", True)),
-            delete_confirm_ttl=int(cfg.get("delete_confirm_ttl", 120)),
+            delete_confirm_ttl=_to_int(cfg.get("delete_confirm_ttl", 120), 120, 10),
             log_enabled=bool(cfg.get("log_enabled", True)),
-            preview_text_chars=int(cfg.get("preview_text_chars", 1200)),
-            path_import_max_files=int(cfg.get("path_import_max_files", 2000)),
-            auto_repair_interval_minutes=int(cfg.get("auto_repair_interval_minutes", 0)),
-            watch_interval_minutes=int(cfg.get("watch_interval_minutes", 0)),
-            export_max_files=int(cfg.get("export_max_files", 100)),
-            batch_max_files=int(cfg.get("batch_max_files", 100)),
-            public_rate_limit_per_minute=int(cfg.get("public_rate_limit_per_minute", 10)),
-            public_file_recall_minutes=max(0, int(cfg.get("public_file_recall_minutes", 0))),
-            rebuild_busy_timeout_seconds=int(cfg.get("rebuild_busy_timeout_seconds", 600)),
+            preview_text_chars=_to_int(cfg.get("preview_text_chars", 1200), 1200, 100),
+            path_import_max_files=_to_int(cfg.get("path_import_max_files", 2000), 2000, 1),
+            auto_repair_interval_minutes=_to_int(cfg.get("auto_repair_interval_minutes", 0), 0, 0),
+            watch_interval_minutes=_to_int(cfg.get("watch_interval_minutes", 0), 0, 0),
+            export_max_files=_to_int(cfg.get("export_max_files", 100), 100, 1),
+            batch_max_files=_to_int(cfg.get("batch_max_files", 100), 100, 1),
+            public_rate_limit_per_minute=_to_int(cfg.get("public_rate_limit_per_minute", 10), 10, 0),
+            public_file_recall_minutes=_to_int(cfg.get("public_file_recall_minutes", 0), 0, 0),
+            rebuild_busy_timeout_seconds=_to_int(cfg.get("rebuild_busy_timeout_seconds", 600), 600, 60),
             public_read_dir=str(cfg.get("public_read_dir") or "Public"),
             seven_zip_path=str(cfg.get("seven_zip_path") or r"D:\7-Zip\7z.exe"),
             categories_raw=str(cfg.get("categories", "") or ""),

@@ -126,6 +126,8 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 
 选择器支持 `tag:标签`、`category:分类`、`search:关键词`、`path:目录`。开启 `allow_all_users` 后，普通用户只能在 `public_read_dir` 内使用查看、搜索、预览、获取、查看标签和查看备注类命令。
 
+文件名或路径包含空格时可使用引号，例如 `/get "my file.zip"`。
+
 所有命令都必须带 `/`，避免普通聊天误触发。
 
 ---

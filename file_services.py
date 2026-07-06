@@ -302,6 +302,8 @@ class FileServiceMixin:
                 return None, "路径不在允许范围内"
             if not self._path_in_event_scope(event, file_path):
                 return None, "文件不在可访问目录内"
+            if self._skip_internal_file(file_path):
+                return None, "文件不在可访问目录内"
             if not file_path.exists():
                 return None, f"文件不存在: {name}"
             if not file_path.is_file():
@@ -311,6 +313,8 @@ class FileServiceMixin:
 
         for file_path in self._direct_file_candidates(name, base_root):
             if not self._safe_path(file_path) or not self._path_in_event_scope(event, file_path):
+                continue
+            if self._skip_internal_file(file_path):
                 continue
             if not file_path.exists():
                 continue
@@ -729,7 +733,8 @@ class FileServiceMixin:
         try:
             from PIL import Image as PILImage
 
-            preview = self.root / ".previews" / f"{path.stem}_{path.stat().st_mtime_ns}.jpg"
+            safe_stem = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in path.stem)[:80] or "preview"
+            preview = self.root / ".previews" / f"{safe_stem}_{path.stat().st_mtime_ns}.jpg"
             if preview.exists():
                 return preview
             with PILImage.open(path) as img:

@@ -17,6 +17,7 @@ from astrbot.api.star import Context, Star, register
 
 from .command_args import (
     parse_command_args,
+    split_first_command_arg,
     split_command_args,
     strip_quotes,
 )
@@ -129,6 +130,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     async def on_loaded(self):
         token = self._begin_rebuild("启动重建")
         if token is None:
+            self._start_maintenance()
             return
         try:
             count = await asyncio.to_thread(self.index.rebuild_from_fs, self.root)
@@ -193,6 +195,8 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
                 pass
         for task in list(self._recall_tasks):
             task.cancel()
+        if self._recall_tasks:
+            await asyncio.gather(*self._recall_tasks, return_exceptions=True)
         self._recall_tasks.clear()
 
     # ---------- 路径与文件工具 ----------
@@ -202,6 +206,14 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
 
     def _parse_command_args(self, event: AstrMessageEvent, commands: set[str]) -> list[str]:
         return parse_command_args(event, commands)
+
+    def _split_first_command_arg(
+        self,
+        event: AstrMessageEvent,
+        commands: set[str],
+        keep_unquoted: bool = False,
+    ) -> list[str]:
+        return split_first_command_arg(event, commands, keep_unquoted=keep_unquoted)
 
     @staticmethod
     def _strip_quotes(text: str) -> str:
@@ -313,7 +325,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         if err:
             yield event.plain_result(err)
             return
-        args = self._split_command_args(event, {"get"}, maxsplit=1)
+        args = self._split_first_command_arg(event, {"get"}, keep_unquoted=True)
         if len(args) < 1:
             yield event.plain_result("用法: /get 文件名|路径|通配符")
             return
@@ -473,7 +485,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             yield event.plain_result(err)
             return
 
-        args = self._split_command_args(event, {"rm"}, maxsplit=1)
+        args = self._split_first_command_arg(event, {"rm"}, keep_unquoted=True)
         if len(args) < 1:
             yield event.plain_result("用法: /rm 文件名")
             return
@@ -543,6 +555,8 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         self._stop_event(event)
         if self._delete_pending.pop(str(event.get_sender_id()), None):
             yield event.plain_result("已取消删除")
+            return
+        yield event.plain_result("没有待取消的操作")
 
     # ---------- mv ----------
 
@@ -554,7 +568,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             yield event.plain_result(err)
             return
 
-        args = self._split_command_args(event, {"mv"}, maxsplit=1)
+        args = self._split_first_command_arg(event, {"mv"})
         if len(args) < 2:
             yield event.plain_result("用法: /mv 源文件 目标路径或新文件名")
             return
@@ -745,7 +759,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     @filter.command("tag", priority=100)
     async def cmd_tag(self, event: AstrMessageEvent):
         self._stop_event(event)
-        args = self._split_command_args(event, {"tag"}, maxsplit=1)
+        args = self._split_first_command_arg(event, {"tag"})
         if len(args) < 1:
             yield event.plain_result("用法: /tag 文件名 [标签...]\n标签前加 - 表示移除，例如 /tag a.txt work -temp")
             return
@@ -791,7 +805,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     @filter.command("note", priority=100)
     async def cmd_note(self, event: AstrMessageEvent):
         self._stop_event(event)
-        args = self._split_command_args(event, {"note"}, maxsplit=1)
+        args = self._split_first_command_arg(event, {"note"})
         if len(args) < 1:
             yield event.plain_result("用法: /note 文件 [备注内容]；内容为 - 表示清空")
             return
@@ -833,7 +847,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         if err:
             yield event.plain_result(err)
             return
-        args = self._split_command_args(event, {"preview"}, maxsplit=1)
+        args = self._split_first_command_arg(event, {"preview"}, keep_unquoted=True)
         if len(args) < 1:
             yield event.plain_result("用法: /preview 文件名")
             return
