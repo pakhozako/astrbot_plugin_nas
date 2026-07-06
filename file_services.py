@@ -852,16 +852,26 @@ class FileServiceMixin:
             return [dict(item) for item in result if isinstance(item, dict)]
         return []
 
+    @staticmethod
+    def _bot_action_clients(bot: Any) -> list[Any]:
+        clients = []
+        for client in (bot, getattr(bot, "api", None)):
+            if client is not None and callable(getattr(client, "call_action", None)) and client not in clients:
+                clients.append(client)
+        return clients
+
     async def _call_bot_action(self, bot: Any, action: str, routing_params: dict[str, Any], **params):
-        if routing_params:
-            try:
-                return await bot.call_action(action, **params, **routing_params)
-            except Exception as first_error:
+        errors = []
+        for client in self._bot_action_clients(bot):
+            param_sets = [{**params, **routing_params}, params] if routing_params else [params]
+            for call_params in param_sets:
                 try:
-                    return await bot.call_action(action, **params)
-                except Exception:
-                    raise first_error
-        return await bot.call_action(action, **params)
+                    return await client.call_action(action, **call_params)
+                except Exception as e:
+                    errors.append(e)
+        if errors:
+            raise errors[-1]
+        raise RuntimeError("当前平台不支持 call_action")
 
     async def _get_group_root_file_refs(
         self,
