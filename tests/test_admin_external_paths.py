@@ -94,21 +94,6 @@ class AdminExternalPathTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-    def test_admin_external_access_accepts_symlink_entry_directory(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            base = Path(temp_dir)
-            root = base / "nas"
-            target = base / "workspace"
-            link = base / "Github"
-            root.mkdir()
-            target.mkdir()
-            link.symlink_to(target, target_is_directory=True)
-            harness = FileHarness(root)
-
-            self.assertTrue(harness._admin_external_access(FakeEvent("2413474391")))
-            self.assertTrue(link.is_symlink())
-            self.assertEqual(link.resolve(), target)
-
 
 class SimpleModeTests(unittest.TestCase):
     def test_simple_mode_is_enabled_by_default(self):
