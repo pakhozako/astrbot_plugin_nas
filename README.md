@@ -72,14 +72,10 @@ git clone https://github.com/pakhozako/astrbot_plugin_nas
 
 ## ⚙️ 配置说明
 
-默认启用精简模式，只保留归档、浏览、获取、预览、搜索、外部路径导入/监控、移动、确认删除、状态与索引修复。管理员外部路径访问默认开启；普通用户始终受 `save_root` 和公开目录约束。关闭 `simple_mode` 可恢复标签、备注、重复审计、批处理和 ZIP 导出。
-
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `save_root` | `data/plugin_data/astrbot_plugin_nas` | 文件保存根目录，本地路径或 NAS 挂载路径 |
 | `admin_users` | `[]` | 管理员列表 |
-| `admin_external_paths` | `true` | 管理员可直接访问 `save_root` 外的真实路径 |
-| `simple_mode` | `true` | 停用标签、备注、重复审计、批处理和 ZIP 导出 |
 | `allow_all_users` | `false` | 开启所有人只读访问 |
 | `public_read_dir` | `Public` | 普通用户可查看和获取的目录，位于 `save_root` 内 |
 | `public_rate_limit_per_minute` | `10` | 普通用户每分钟只读命令上限，0 表示不限制 |

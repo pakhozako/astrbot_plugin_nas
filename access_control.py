@@ -101,12 +101,6 @@ class AccessControlMixin:
         return self.root
 
     def _path_in_event_scope(self, event: AstrMessageEvent | None, path: Path) -> bool:
-        if (
-            event
-            and self.admin_external_paths
-            and self._is_admin(str(event.get_sender_id()))
-        ):
-            return True
         if not self._safe_path(path):
             return False
         if event and self._is_public_user(str(event.get_sender_id())):
@@ -123,12 +117,6 @@ class AccessControlMixin:
                 rel = path.resolve().relative_to(self.root)
                 return str(rel) if str(rel) != "." else "/"
             except ValueError:
-                if (
-                    event
-                    and self.admin_external_paths
-                    and self._is_admin(str(event.get_sender_id()))
-                ):
-                    return str(path.resolve())
                 return path.name
 
     def _filter_event_scope(self, event: AstrMessageEvent | None, rows: list[dict]) -> list[dict]:
