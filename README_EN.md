@@ -4,7 +4,7 @@
 
 ![:name](https://count.getloli.com/@astrbot_plugin_nas?name=astrbot_plugin_nas&theme=minecraft&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
 
-> 🚀 **AstrBot Private Chat File Auto-Archiving Plugin** — SQLite WAL index + file-system ground truth, with classification, deduplication, search, tags, notes, batch operations, ZIP export, and index repair.
+> 🚀 **AstrBot Private Chat File Auto-Archiving Plugin** — SQLite WAL index + file-system ground truth, with classification, deduplication, search, previews, tags, notes, path import, directory watch, batch operations, ZIP export, and index repair.
 
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -18,9 +18,9 @@
 main.py              ← Plugin entry + AstrBot handlers
 ├── access_control.py← Permission, group, and public scope helpers
 ├── config.py        ← Configuration normalization
-├── constants.py     ← Version and internal path constants
+├── constants.py     ← Version, internal path, and extension constants
 ├── command_args.py  ← Command text parsing
-├── file_services.py ← File lookup, export, and send helpers
+├── file_services.py ← File lookup, import, preview, export, and send helpers
 ├── help_text.py     ← /nashelp text
 ├── runtime_state.py ← Rate limit and index task state
 ├── index.py         ← SQLite index layer
@@ -40,11 +40,14 @@ main.py              ← Plugin entry + AstrBot handlers
 | 🔍 Search | SQLite `LIKE` name/note search plus `tag:<tag>` |
 | 🏷️ Tags | `/tag` views, adds, and removes tags |
 | 📝 Notes | `/note` stores file notes that are searchable |
+| 📥 Path import | `/add` imports from any local path or mounted NAS path |
+| 👀 Directory watch | `/watch` adds external directories for manual or scheduled import |
 | 🧬 Duplicate audit | `/dups` lists duplicate groups by content hash |
 | 📦 Batch/export | `/batch` tags, untags, or moves matches; `/export` uses 7-Zip by default to create ZIP packages from selectors |
+| 🖼️ Preview | `/preview` supports images and text excerpts |
 | 🧵 I/O isolation | Hashing, copy, move, traversal, and SQLite operations run in worker threads |
 | 🛡️ Path guard | Managed read/delete/move operations stay inside `save_root` |
-| ⛓️ Symlink protection | Symlinks are skipped during archiving and traversal |
+| ⛓️ Symlink protection | Symlinks are skipped during import and traversal |
 | ✅ Delete confirmation | `/rm` requires `/confirm` |
 | 🔄 Index repair | Startup rebuild, manual `/repair`, optional background consistency checks |
 
@@ -83,6 +86,9 @@ After restarting AstrBot, configure the admin list and archive path as needed in
 | `dedup_enabled` | `true` | MD5 content deduplication |
 | `delete_confirm_ttl` | `120` | Delete confirmation TTL in seconds |
 | `log_enabled` | `true` | Enable operation logs |
+| `preview_text_chars` | `1200` | Max characters for text previews |
+| `path_import_max_files` | `2000` | Max files imported by one `/add` directory run |
+| `watch_interval_minutes` | `0` | Scheduled watch import interval; 0 disables it |
 | `export_max_files` | `100` | Max files per `/export` |
 | `seven_zip_path` | `D:\7-Zip\7z.exe` | 7-Zip executable used by `/export`; invalid or empty values auto-discover 7-Zip and then fall back to built-in ZIP |
 | `batch_max_files` | `100` | Max files per `/batch` |
@@ -100,11 +106,14 @@ After restarting AstrBot, configure the admin list and archive path as needed in
 | `/ls [path]` | List files |
 | `/tree [path] [depth]` | Show a directory tree; default depth 2, max depth 5 |
 | `/get file` | Send archived file; supports bare names, relative paths, wildcards, and fuzzy matching |
+| `/preview file` | Image preview or text excerpt |
 | `/search keyword` | Search files; use `tag:<tag>` for tags |
 | `/search --recent [limit]` | Show recent files; default 10, max 30 |
 | `/tag file [tags...]` | View/add/remove tags; `-tag` removes |
 | `/note file [note]` | Show or set notes; use `-` to clear |
 | `/status` | Space, index, and runtime status summary |
+| `/add source [category]` | Import from any local/NAS path |
+| `/watch list|add|rm|run` | Manage watched directories and scan them |
 | `/dups [limit]` | Show duplicate file groups |
 | `/batch selector tag|untag|move ...` | Batch tag, untag, or move files |
 | `/export selector [name.zip]` | Export matching files as ZIP |
@@ -115,7 +124,7 @@ After restarting AstrBot, configure the admin list and archive path as needed in
 | `/repair` | Repair index |
 | `/repair vacuum` | Compact/analyze database |
 
-Selectors support `tag:<tag>`, `category:<category>`, `search:<keyword>`, and `path:<directory>`. When `allow_all_users` is enabled, ordinary users can only browse, search, fetch, and view tags/notes inside `public_read_dir`.
+Selectors support `tag:<tag>`, `category:<category>`, `search:<keyword>`, and `path:<directory>`. When `allow_all_users` is enabled, ordinary users can only browse, search, preview, fetch, and view tags/notes inside `public_read_dir`.
 
 Quote file names or paths that contain spaces, for example `/get "my file.zip"`.
 

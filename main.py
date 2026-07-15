@@ -1,5 +1,5 @@
 """
-NAS 助手 - AstrBot 私聊文件自动归档插件 v2.5.0
+NAS 助手 - AstrBot 私聊文件自动归档插件 v2.4.1
 文件系统 = 真相源，SQLite = 索引缓存
 """
 
@@ -22,7 +22,7 @@ from .command_args import (
     strip_quotes,
 )
 from .access_control import AccessControlMixin
-from .constants import CREATED_INTERNAL_DIRS, PLUGIN_VERSION
+from .constants import INTERNAL_DIRS, PLUGIN_VERSION
 from .config import NASSettings
 from .file_services import FileServiceMixin
 from .help_text import nas_help_text
@@ -49,7 +49,10 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         self.dedup = settings.dedup_enabled
         self.confirm_ttl = settings.delete_confirm_ttl
         self.log_enabled = settings.log_enabled
+        self.preview_text_chars = settings.preview_text_chars
+        self.path_import_max_files = settings.path_import_max_files
         self.auto_repair_interval = settings.auto_repair_interval_minutes
+        self.watch_interval = settings.watch_interval_minutes
         self.export_max_files = settings.export_max_files
         self.batch_max_files = settings.batch_max_files
         self.seven_zip_path = settings.seven_zip_path
@@ -65,6 +68,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         self._file_lock = asyncio.Lock()
         self._maintenance_task = None
         self._last_repair_run = 0.0
+        self._last_watch_run = 0.0
 
         self._init_dirs()
         self.index = FileIndex(str(self.root / "files.db"))
@@ -104,7 +108,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     def _init_dirs(self):
         for cat in FileClassifier.get_all_categories():
             (self.root / cat).mkdir(parents=True, exist_ok=True)
-        for directory in CREATED_INTERNAL_DIRS:
+        for directory in INTERNAL_DIRS:
             (self.root / directory).mkdir(parents=True, exist_ok=True)
         self.public_read_root.mkdir(parents=True, exist_ok=True)
 
@@ -145,13 +149,19 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         self._start_maintenance()
 
     def _start_maintenance(self):
-        if self.auto_repair_interval <= 0 or self._maintenance_task:
+        if (self.auto_repair_interval <= 0 and self.watch_interval <= 0) or self._maintenance_task:
             return
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
-        logger.info(f"[NAS] 后台维护已启用: 一致性检查 {self.auto_repair_interval} 分钟")
+        parts = []
+        if self.auto_repair_interval > 0:
+            parts.append(f"一致性检查 {self.auto_repair_interval} 分钟")
+        if self.watch_interval > 0:
+            parts.append(f"监控导入 {self.watch_interval} 分钟")
+        logger.info("[NAS] 后台维护已启用: " + "，".join(parts))
 
     async def _maintenance_loop(self):
-        interval = max(1, self.auto_repair_interval) * 60
+        active = [v for v in (self.auto_repair_interval, self.watch_interval) if v > 0]
+        interval = max(1, min(active or [1])) * 60
         while True:
             await asyncio.sleep(interval)
             if self._rebuild_busy_message():
@@ -171,6 +181,13 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
                         )
                     finally:
                         self._finish_rebuild(token)
+                if self.watch_interval > 0 and now - self._last_watch_run >= self.watch_interval * 60:
+                    result = await self._run_watch_scan()
+                    self._last_watch_run = now
+                    self._log_info(
+                        "[NAS] 后台监控导入完成 | "
+                        f"新增 {result['saved']} 重复 {result['duplicate']} 跳过 {result['skipped']} 失败 {result['error']}"
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -623,6 +640,133 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             logger.error(f"[NAS] 移动失败: {e}")
             yield event.plain_result(f"移动失败: {e}")
 
+    # ---------- path import ----------
+
+    @filter.command("add", priority=100)
+    async def cmd_add_path(self, event: AstrMessageEvent):
+        self._stop_event(event)
+        err = self._access_error(event, admin=True, action="从路径添加文件")
+        if err:
+            yield event.plain_result(err)
+            return
+
+        args = self._parse_command_args(event, {"add"})
+        if len(args) < 1:
+            yield event.plain_result("用法: /add 源路径 [分类]\n源路径可以是任意本机路径或 NAS 挂载路径")
+            return
+        raw_source = Path(self._strip_quotes(args[0])).expanduser()
+        forced_category = self._strip_quotes(args[1]) if len(args) > 1 else None
+        if forced_category and not self._safe_dir_name(forced_category):
+            yield event.plain_result("分类名不合法")
+            return
+        if raw_source.is_symlink() and not self._admin_external_access(event):
+            yield event.plain_result("为避免目录逃逸，不能直接导入软链接路径")
+            return
+        source = raw_source.resolve()
+        if not source.exists():
+            yield event.plain_result(f"源路径不存在: {source}")
+            return
+
+        files, truncated = await asyncio.to_thread(self._collect_import_files, source)
+        if not files:
+            yield event.plain_result("没有可导入的文件")
+            return
+
+        yield event.plain_result(f"开始导入 {len(files)} 个文件" + ("，已按上限截断" if truncated else ""))
+        counts = {"saved": 0, "duplicate": 0, "skipped": 0, "error": 0}
+        samples = []
+        uid = str(event.get_sender_id())
+        for file_path in files:
+            result = await self._archive_file(file_path, uid, forced_category)
+            status = result["status"]
+            counts[status if status in counts else "error"] += 1
+            if status == "saved" and len(samples) < 8:
+                samples.append(f"  [{result['category']}] {result['name']}")
+
+        lines = [
+            "路径导入完成",
+            f"  新增: {counts['saved']}",
+            f"  重复: {counts['duplicate']}",
+            f"  跳过: {counts['skipped']}",
+            f"  失败: {counts['error']}",
+        ]
+        if samples:
+            lines.append("")
+            lines.extend(samples)
+        yield event.plain_result("\n".join(lines))
+
+    # ---------- watch ----------
+
+    @filter.command("watch", priority=100)
+    async def cmd_watch(self, event: AstrMessageEvent):
+        self._stop_event(event)
+        err = self._access_error(event, admin=True, action="管理监控目录")
+        if err:
+            yield event.plain_result(err)
+            return
+
+        args = self._parse_command_args(event, {"watch"})
+        sub = args[0].lower() if args else "list"
+        if sub in {"list", "ls"}:
+            watches = await asyncio.to_thread(self.index.list_watches)
+            if not watches:
+                yield event.plain_result("暂无监控目录")
+                return
+            lines = ["监控目录:"]
+            for item in watches[:30]:
+                cat = item["category"] or "自动分类"
+                exists = "OK" if Path(item["path"]).exists() else "缺失"
+                lines.append(f"  [{exists}] {item['path']} -> {cat}")
+            yield event.plain_result("\n".join(lines))
+            return
+
+        if sub == "add":
+            if len(args) < 2:
+                yield event.plain_result("用法: /watch add 目录 [分类]")
+                return
+            raw_source = Path(self._strip_quotes(args[1])).expanduser()
+            if raw_source.is_symlink() and not self._admin_external_access(event):
+                yield event.plain_result("不能监控软链接目录")
+                return
+            source = raw_source.resolve()
+            if not source.exists() or not source.is_dir():
+                yield event.plain_result(f"目录不存在: {source}")
+                return
+            category = self._strip_quotes(args[2]) if len(args) > 2 else ""
+            if category and not self._safe_dir_name(category):
+                yield event.plain_result("分类名不合法")
+                return
+            await asyncio.to_thread(self.index.add_watch, str(source), category)
+            yield event.plain_result(f"已添加监控目录: {source}" + (f" -> {category}" if category else ""))
+            return
+
+        if sub == "rm":
+            if len(args) < 2:
+                yield event.plain_result("用法: /watch rm 目录")
+                return
+            target = Path(self._strip_quotes(args[1])).expanduser()
+            path = target.resolve()
+            removed = await asyncio.to_thread(self.index.remove_watch, str(path))
+            yield event.plain_result("已移除监控目录" if removed else "未找到该监控目录")
+            return
+
+        if sub == "run":
+            yield event.plain_result("正在扫描监控目录...")
+            result = await self._run_watch_scan()
+            self._last_watch_run = time.time()
+            yield event.plain_result(
+                "监控扫描完成\n"
+                f"  扫描: {result['total']}\n"
+                f"  新增: {result['saved']}\n"
+                f"  重复: {result['duplicate']}\n"
+                f"  跳过: {result['skipped']}\n"
+                f"  缺失目录: {result['missing']}\n"
+                f"  失败: {result['error']}"
+            )
+            return
+
+        yield event.plain_result("用法: /watch list|add|rm|run")
+
     # ---------- tag ----------
 
     @filter.command("tag", priority=100)
@@ -712,6 +856,48 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             yield event.plain_result("备注保存失败，索引中未找到该文件")
             return
         yield event.plain_result(f"{info['name']} 备注已" + ("清空" if not note else "更新"))
+
+    # ---------- preview ----------
+
+    @filter.command("preview", priority=100)
+    async def cmd_preview(self, event: AstrMessageEvent):
+        self._stop_event(event)
+        err = self._access_error(event)
+        if err:
+            yield event.plain_result(err)
+            return
+        args = self._split_first_command_arg(event, {"preview"}, keep_unquoted=True)
+        if len(args) < 1:
+            yield event.plain_result("用法: /preview 文件名")
+            return
+        info, err = await self._resolve_indexed_file(args[0], "/preview", event=event)
+        if err:
+            yield event.plain_result(err)
+            return
+        path = Path(info["path"])
+        tags = await asyncio.to_thread(self.index.list_tags, info["path"])
+        header = (
+            f"[{info['category']}] {info['name']}\n"
+            f"大小: {format_size(path.stat().st_size)}\n"
+            f"标签: {' '.join('#' + t for t in tags) if tags else '暂无'}"
+        )
+        note = (info.get("note") or "").strip()
+        if note:
+            header += f"\n备注: {note}"
+        if self._is_image_file(path):
+            preview = await asyncio.to_thread(self._image_preview_path, path)
+            yield event.plain_result(header)
+            yield event.chain_result([Image.fromFileSystem(str(preview))])
+            return
+        if self._is_text_file(path):
+            try:
+                text = await asyncio.to_thread(self._read_text_preview, path)
+            except Exception as e:
+                yield event.plain_result(f"{header}\n\n读取预览失败: {e}")
+                return
+            yield event.plain_result(f"{header}\n\n{text}")
+            return
+        yield event.plain_result(f"{header}\n\n该类型暂不支持内容预览，可用 /get 下载。")
 
     # ---------- dups / batch / export ----------
 
@@ -914,6 +1100,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             f"  索引状态: {status}",
             f"  版本: {PLUGIN_VERSION}",
             f"  后台检查: {self.auto_repair_interval} 分钟" if self.auto_repair_interval > 0 else "  后台检查: 关闭",
+            f"  监控导入: {self.watch_interval} 分钟" if self.watch_interval > 0 else "  监控导入: 关闭",
             f"  公开目录: {self.public_read_root.relative_to(self.root)}" if self.allow_all_users else "  公开目录: 关闭",
             f"  普通用户文件撤回: {self.public_file_recall_minutes} 分钟" if self.public_file_recall_minutes > 0 else "  普通用户文件撤回: 关闭",
             "",

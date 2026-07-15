@@ -1,9 +1,9 @@
 name: "astrbot_plugin_nas"
 display_name: "NAS 助手"
 short_desc: "管理员私聊文件归档与外部路径访问"
-desc: "管理员私聊文件助手，支持自动归档、任意真实路径浏览与获取、搜索、确认删除和索引修复"
-help: "Help: /nashelp; core: /ls /tree /get /search /status /rm /confirm /cancel /mv /repair"
-version: "v2.5.0"
+desc: "管理员私聊文件助手，支持自动归档、任意真实路径浏览与获取、搜索、预览、导入、目录监控和索引修复"
+help: "Help: /nashelp; core: /ls /tree /get /preview /search /status /add /watch /rm /confirm /cancel /mv /repair"
+version: "v2.4.1"
 author: "pakhozako"
 repo: "https://github.com/pakhozako/astrbot_plugin_nas"
 support_platforms:

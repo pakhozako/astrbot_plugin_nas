@@ -106,6 +106,14 @@ class FileIndex:
                 PRIMARY KEY(file_path, tag)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS watch_paths (
+                path TEXT PRIMARY KEY,
+                category TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            )
+        """)
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hash ON files(hash)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON files(category)")
@@ -333,6 +341,30 @@ class FileIndex:
                 files = self._select_rows(conn, "hash=?", (h,), "ORDER BY created_at DESC")
                 groups.append({"hash": h, "count": count, "size": size or 0, "files": files})
             return groups
+
+    def add_watch(self, path: str, category: str = ""):
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO watch_paths(path, category, created_at)
+                VALUES (?, ?, COALESCE((SELECT created_at FROM watch_paths WHERE path=?), ?))
+                """,
+                (path, category or "", path, int(time.time())),
+            )
+            conn.commit()
+
+    def remove_watch(self, path: str) -> bool:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("DELETE FROM watch_paths WHERE path=?", (path,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def list_watches(self) -> list[dict]:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT path, category, created_at FROM watch_paths ORDER BY created_at DESC"
+            ).fetchall()
+            return [{"path": r[0], "category": r[1], "created_at": r[2]} for r in rows]
 
     def repair_from_fs(self, root: Path) -> dict:
         with self._lock, sqlite3.connect(self.db_path) as conn:
