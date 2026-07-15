@@ -11,6 +11,18 @@
     "hint": "填写可管理 NAS 助手的用户 ID",
     "default": []
   },
+  "admin_external_paths": {
+    "type": "bool",
+    "description": "管理员允许访问外部路径",
+    "hint": "开启后管理员可直接浏览、获取、预览、移动和确认删除 save_root 外的真实路径",
+    "default": true
+  },
+  "simple_mode": {
+    "type": "bool",
+    "description": "精简模式",
+    "hint": "保留核心文件功能，停用标签、备注、重复审计、批处理和 ZIP 导出",
+    "default": true
+  },
   "allow_all_users": {
     "type": "bool",
     "description": "允许所有人只读访问",

@@ -298,8 +298,6 @@ class FileServiceMixin:
 
         if os.path.isabs(name):
             file_path = Path(name).resolve()
-            if not self._safe_path(file_path):
-                return None, "路径不在允许范围内"
             if not self._path_in_event_scope(event, file_path):
                 return None, "文件不在可访问目录内"
             if self._skip_internal_file(file_path):
@@ -312,7 +310,7 @@ class FileServiceMixin:
             return info or self._info_from_path(file_path), None
 
         for file_path in self._direct_file_candidates(name, base_root):
-            if not self._safe_path(file_path) or not self._path_in_event_scope(event, file_path):
+            if not self._path_in_event_scope(event, file_path):
                 continue
             if self._skip_internal_file(file_path):
                 continue
@@ -342,7 +340,11 @@ class FileServiceMixin:
         stale = []
         for row in results:
             path = Path(row["path"])
-            if not self._safe_path(path) or not path.exists() or not path.is_file():
+            if (
+                not self._path_in_event_scope(event, path)
+                or not path.exists()
+                or not path.is_file()
+            ):
                 stale.append(row)
             else:
                 valid.append(row)
@@ -378,7 +380,11 @@ class FileServiceMixin:
         stale = []
         for row in visible:
             path = Path(row["path"])
-            if not self._safe_path(path) or not path.exists() or not path.is_file():
+            if (
+                not self._path_in_event_scope(event, path)
+                or not path.exists()
+                or not path.is_file()
+            ):
                 stale.append(row)
             else:
                 valid.append(row)
@@ -444,16 +450,25 @@ class FileServiceMixin:
                 counts["total"] += 1
         return counts
 
-    async def _move_info_to_dir(self, info: dict, target_dir: Path) -> tuple[bool, str]:
+    async def _move_info_to_dir(
+        self,
+        info: dict,
+        target_dir: Path,
+        event: AstrMessageEvent | None = None,
+    ) -> tuple[bool, str]:
         src = Path(info["path"]).resolve()
-        if not self._safe_path(src) or not src.exists() or not src.is_file():
+        if (
+            not self._path_in_event_scope(event, src)
+            or not src.exists()
+            or not src.is_file()
+        ):
             await asyncio.to_thread(self.index.remove, str(src))
             return False, f"{info['name']}: 文件不存在"
-        if not self._safe_path(target_dir):
+        if not self._path_in_event_scope(event, target_dir):
             return False, "目标目录不合法"
         await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
         dst = self._next_available_path(target_dir, src.name).resolve()
-        if not self._safe_path(dst):
+        if not self._path_in_event_scope(event, dst):
             return False, "目标路径不合法"
         try:
             await asyncio.to_thread(shutil.move, str(src), str(dst))
@@ -461,7 +476,7 @@ class FileServiceMixin:
             h = await asyncio.to_thread(file_hash, str(dst))
             new_cat = FileClassifier.get_category(dst.name)
             await asyncio.to_thread(self.index.move, str(src), h, str(dst), dst.name, fp[0], fp[1], new_cat)
-            return True, str(dst.relative_to(self.root))
+            return True, self._display_path_for_event(event, dst)
         except Exception as e:
             return False, f"{info['name']}: {e}"
 

@@ -22,6 +22,8 @@ def _to_int(value, default: int, minimum: int | None = None, maximum: int | None
 class NASSettings:
     root: Path
     admin_users: set[str]
+    admin_external_paths: bool
+    simple_mode: bool
     allow_all_users: bool
     allow_group_commands: bool
     max_file_size_bytes: int
@@ -49,6 +51,8 @@ class NASSettings:
         return cls(
             root=Path(save_root).resolve(),
             admin_users={str(u) for u in cfg.get("admin_users", [])},
+            admin_external_paths=bool(cfg.get("admin_external_paths", True)),
+            simple_mode=bool(cfg.get("simple_mode", True)),
             allow_all_users=bool(cfg.get("allow_all_users", False)),
             allow_group_commands=bool(cfg.get("allow_group_commands", False)),
             max_file_size_bytes=_to_int(cfg.get("max_file_size", 2048), 2048, 1) * 1024 * 1024,

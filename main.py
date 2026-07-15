@@ -1,5 +1,5 @@
 """
-NAS 助手 - AstrBot 私聊文件自动归档插件 v2.3.0
+NAS 助手 - AstrBot 私聊文件自动归档插件 v2.4.0
 文件系统 = 真相源，SQLite = 索引缓存
 """
 
@@ -40,6 +40,8 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         self.settings = settings
         self.root = settings.root
         self.admins = settings.admin_users
+        self.admin_external_paths = settings.admin_external_paths
+        self.simple_mode = settings.simple_mode
         self.allow_all_users = settings.allow_all_users
         self.allow_group_commands = settings.allow_group_commands
         self.max_size = settings.max_file_size_bytes
@@ -77,6 +79,11 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     def _log_info(self, message: str):
         if self.log_enabled:
             logger.info(message)
+
+    def _simple_mode_error(self) -> str | None:
+        if self.simple_mode:
+            return "精简模式已停用此功能"
+        return None
 
     def _load_categories(self, raw: str):
         FileClassifier.reset_categories()
@@ -530,7 +537,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             return
 
         target: Path = waiting["path"]
-        if not self._safe_path(target):
+        if not self._path_in_event_scope(event, target):
             await asyncio.to_thread(self.index.remove, str(target))
             yield event.plain_result("索引路径不在允许范围内，已清理")
             return
@@ -597,7 +604,9 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         else:
             dst = (self.root / dst_arg).resolve()
 
-        if not self._safe_path(src) or not self._safe_path(dst):
+        if not self._path_in_event_scope(event, src) or not self._path_in_event_scope(
+            event, dst
+        ):
             yield event.plain_result("路径不合法")
             return
         if not src.exists() or not src.is_file():
@@ -606,9 +615,11 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         if dst.exists() and dst.is_dir():
             dst = dst / src.name
         if dst.exists():
-            yield event.plain_result(f"目标已存在: {dst.relative_to(self.root)}")
+            yield event.plain_result(
+                f"目标已存在: {self._display_path_for_event(event, dst)}"
+            )
             return
-        if not self._safe_path(dst):
+        if not self._path_in_event_scope(event, dst):
             yield event.plain_result("目标路径不合法")
             return
         try:
@@ -622,7 +633,9 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
                 fp[0], fp[1], new_cat
             )
             self._log_info(f"[NAS] MOVE | {event.get_sender_id()} | {src.name} -> {dst}")
-            yield event.plain_result(f"已移动到 {dst.relative_to(self.root)}")
+            yield event.plain_result(
+                f"已移动到 {self._display_path_for_event(event, dst)}"
+            )
         except Exception as e:
             logger.error(f"[NAS] 移动失败: {e}")
             yield event.plain_result(f"移动失败: {e}")
@@ -759,6 +772,9 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     @filter.command("tag", priority=100)
     async def cmd_tag(self, event: AstrMessageEvent):
         self._stop_event(event)
+        if error := self._simple_mode_error():
+            yield event.plain_result(error)
+            return
         args = self._split_first_command_arg(event, {"tag"})
         if len(args) < 1:
             yield event.plain_result("用法: /tag 文件名 [标签...]\n标签前加 - 表示移除，例如 /tag a.txt work -temp")
@@ -805,6 +821,9 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     @filter.command("note", priority=100)
     async def cmd_note(self, event: AstrMessageEvent):
         self._stop_event(event)
+        if error := self._simple_mode_error():
+            yield event.plain_result(error)
+            return
         args = self._split_first_command_arg(event, {"note"})
         if len(args) < 1:
             yield event.plain_result("用法: /note 文件 [备注内容]；内容为 - 表示清空")
@@ -885,6 +904,9 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     @filter.command("dups", priority=100)
     async def cmd_dups(self, event: AstrMessageEvent):
         self._stop_event(event)
+        if error := self._simple_mode_error():
+            yield event.plain_result(error)
+            return
         err = self._access_error(event, admin=True, action="查看重复文件")
         if err:
             yield event.plain_result(err)
@@ -923,6 +945,9 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     @filter.command("batch", priority=100)
     async def cmd_batch(self, event: AstrMessageEvent):
         self._stop_event(event)
+        if error := self._simple_mode_error():
+            yield event.plain_result(error)
+            return
         err = self._access_error(event, admin=True, action="执行批量操作")
         if err:
             yield event.plain_result(err)
@@ -992,13 +1017,13 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
                 return
             raw_target = Path(self._strip_quotes(args[2])).expanduser()
             target_dir = raw_target.resolve() if raw_target.is_absolute() else (self.root / raw_target).resolve()
-            if not self._safe_path(target_dir):
+            if not self._path_in_event_scope(event, target_dir):
                 yield event.plain_result("目标目录不合法")
                 return
             moved = 0
             failed = []
             for row in rows:
-                ok, message = await self._move_info_to_dir(row, target_dir)
+                ok, message = await self._move_info_to_dir(row, target_dir, event)
                 if ok:
                     moved += 1
                 elif len(failed) < 5:
@@ -1017,6 +1042,9 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
     @filter.command("export", priority=100)
     async def cmd_export(self, event: AstrMessageEvent):
         self._stop_event(event)
+        if error := self._simple_mode_error():
+            yield event.plain_result(error)
+            return
         err = self._access_error(event, admin=True, action="导出文件")
         if err:
             yield event.plain_result(err)
@@ -1136,4 +1164,4 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         yield event.plain_result(self._nas_help_text())
 
     def _nas_help_text(self) -> str:
-        return nas_help_text()
+        return nas_help_text(simple_mode=self.simple_mode)
