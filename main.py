@@ -1,5 +1,5 @@
 """
-NAS 助手 - AstrBot 私聊文件自动归档插件 v2.4.0
+NAS 助手 - AstrBot 私聊文件自动归档插件 v2.4.1
 文件系统 = 真相源，SQLite = 索引缓存
 """
 
@@ -659,7 +659,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         if forced_category and not self._safe_dir_name(forced_category):
             yield event.plain_result("分类名不合法")
             return
-        if raw_source.is_symlink():
+        if raw_source.is_symlink() and not self._admin_external_access(event):
             yield event.plain_result("为避免目录逃逸，不能直接导入软链接路径")
             return
         source = raw_source.resolve()
@@ -725,7 +725,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
                 yield event.plain_result("用法: /watch add 目录 [分类]")
                 return
             raw_source = Path(self._strip_quotes(args[1])).expanduser()
-            if raw_source.is_symlink():
+            if raw_source.is_symlink() and not self._admin_external_access(event):
                 yield event.plain_result("不能监控软链接目录")
                 return
             source = raw_source.resolve()

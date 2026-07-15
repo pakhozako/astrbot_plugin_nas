@@ -28,6 +28,13 @@ class AccessControlMixin:
     def _is_public_user(self, uid: str) -> bool:
         return self.allow_all_users and not self._is_admin(uid)
 
+    def _admin_external_access(self, event: AstrMessageEvent | None) -> bool:
+        return bool(
+            event
+            and self.admin_external_paths
+            and self._is_admin(str(event.get_sender_id()))
+        )
+
     @staticmethod
     def _stop_event(event: AstrMessageEvent):
         try:
@@ -101,11 +108,7 @@ class AccessControlMixin:
         return self.root
 
     def _path_in_event_scope(self, event: AstrMessageEvent | None, path: Path) -> bool:
-        if (
-            event
-            and self.admin_external_paths
-            and self._is_admin(str(event.get_sender_id()))
-        ):
+        if self._admin_external_access(event):
             return True
         if not self._safe_path(path):
             return False
@@ -123,11 +126,7 @@ class AccessControlMixin:
                 rel = path.resolve().relative_to(self.root)
                 return str(rel) if str(rel) != "." else "/"
             except ValueError:
-                if (
-                    event
-                    and self.admin_external_paths
-                    and self._is_admin(str(event.get_sender_id()))
-                ):
+                if self._admin_external_access(event):
                     return str(path.resolve())
                 return path.name
 
