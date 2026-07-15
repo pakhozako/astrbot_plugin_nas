@@ -107,6 +107,11 @@ class AccessControlMixin:
             return self._path_under(path, self.public_read_root)
         return True
 
+    def _path_in_read_scope(self, event: AstrMessageEvent | None, path: Path) -> bool:
+        if self._path_in_event_scope(event, path):
+            return True
+        return bool(event and self._is_admin(str(event.get_sender_id())))
+
     def _display_path_for_event(self, event: AstrMessageEvent | None, path: Path) -> str:
         root = self._scope_root_for_event(event)
         try:
@@ -118,6 +123,13 @@ class AccessControlMixin:
                 return str(rel) if str(rel) != "." else "/"
             except ValueError:
                 return path.name
+
+    def _display_read_path_for_event(self, event: AstrMessageEvent | None, path: Path) -> str:
+        if self._path_in_event_scope(event, path):
+            return self._display_path_for_event(event, path)
+        if event and self._is_admin(str(event.get_sender_id())):
+            return str(path.resolve())
+        return path.name
 
     def _filter_event_scope(self, event: AstrMessageEvent | None, rows: list[dict]) -> list[dict]:
         visible = []

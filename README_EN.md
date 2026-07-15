@@ -36,7 +36,7 @@ main.py              ← Plugin entry + AstrBot handlers
 | Feature | Description |
 |---------|-------------|
 | 🗂️ Auto-classification | Extension-based routing to `Images/` `Videos/` `Music/` `Documents/` `Archives/` `Others/` |
-| 🔐 Access control | Supports a management list; optional read-only access for everyone with one public directory and per-minute rate limits |
+| 🔐 Access control | Admins can read any local path; ordinary read-only access stays limited to one public directory and per-minute rate limits |
 | 🔍 Search | SQLite `LIKE` name/note search plus `tag:<tag>` |
 | 🏷️ Tags | `/tag` views, adds, and removes tags |
 | 📝 Notes | `/note` stores file notes that are searchable |

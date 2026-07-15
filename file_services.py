@@ -272,6 +272,7 @@ class FileServiceMixin:
         allow_search: bool = True,
         allow_glob: bool = False,
         allow_fuzzy: bool = False,
+        allow_external_read: bool = False,
         event: AstrMessageEvent | None = None,
     ) -> tuple[dict | None, str | None]:
         name = self._strip_quotes(query)
@@ -298,9 +299,12 @@ class FileServiceMixin:
 
         if os.path.isabs(name):
             file_path = Path(name).resolve()
-            if not self._safe_path(file_path):
-                return None, "路径不在允许范围内"
-            if not self._path_in_event_scope(event, file_path):
+            in_scope = (
+                self._path_in_read_scope(event, file_path)
+                if allow_external_read
+                else self._path_in_event_scope(event, file_path)
+            )
+            if not in_scope:
                 return None, "文件不在可访问目录内"
             if self._skip_internal_file(file_path):
                 return None, "文件不在可访问目录内"

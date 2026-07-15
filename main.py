@@ -1,5 +1,5 @@
 """
-NAS 助手 - AstrBot 私聊文件自动归档插件 v2.3.0
+NAS 助手 - AstrBot 私聊文件自动归档插件 v2.3.4
 文件系统 = 真相源，SQLite = 索引缓存
 """
 
@@ -279,7 +279,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         else:
             target = base_root
 
-        if not self._path_in_event_scope(event, target):
+        if not self._path_in_read_scope(event, target):
             yield event.plain_result("路径不在允许范围内")
             return
         if not target.is_dir():
@@ -292,10 +292,10 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             yield event.plain_result(f"读取目录失败: {e}")
             return
         if not entries:
-            yield event.plain_result(f"{self._display_path_for_event(event, target)} 是空目录")
+            yield event.plain_result(f"{self._display_read_path_for_event(event, target)} 是空目录")
             return
 
-        lines = [f"{self._display_path_for_event(event, target)}\n"]
+        lines = [f"{self._display_read_path_for_event(event, target)}\n"]
         for e in entries[:30]:
             if e.is_symlink():
                 continue
@@ -335,6 +335,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             "/get",
             allow_glob=True,
             allow_fuzzy=True,
+            allow_external_read=True,
             event=event,
         )
         if err:
@@ -429,7 +430,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
                 yield event.plain_result("用法: /tree [路径] [深度]")
                 return
 
-        if not self._path_in_event_scope(event, target):
+        if not self._path_in_read_scope(event, target):
             yield event.plain_result("路径不在允许范围内")
             return
         if not target.is_dir():
@@ -437,7 +438,7 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
             return
 
         def build_tree():
-            root_name = self._display_path_for_event(event, target)
+            root_name = self._display_read_path_for_event(event, target)
             lines = [root_name]
             limit = 80
 
@@ -851,7 +852,12 @@ class NASPlugin(AccessControlMixin, FileServiceMixin, Star):
         if len(args) < 1:
             yield event.plain_result("用法: /preview 文件名")
             return
-        info, err = await self._resolve_indexed_file(args[0], "/preview", event=event)
+        info, err = await self._resolve_indexed_file(
+            args[0],
+            "/preview",
+            allow_external_read=True,
+            event=event,
+        )
         if err:
             yield event.plain_result(err)
             return
