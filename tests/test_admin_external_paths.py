@@ -119,6 +119,9 @@ class SimpleModeTests(unittest.TestCase):
     def test_simple_help_hides_advanced_commands(self):
         help_text = nas_help_text(simple_mode=True)
         self.assertIn("/get 文件或绝对路径", help_text)
+        self.assertNotIn("/preview", help_text)
+        self.assertNotIn("/add", help_text)
+        self.assertNotIn("/watch", help_text)
         self.assertNotIn("/batch", help_text)
         self.assertNotIn("/export", help_text)
 

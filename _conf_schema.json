@@ -14,7 +14,7 @@
   "admin_external_paths": {
     "type": "bool",
     "description": "管理员允许访问外部路径",
-    "hint": "开启后管理员可直接浏览、获取、预览、移动和确认删除 save_root 外的真实路径",
+    "hint": "开启后管理员可直接浏览、获取、移动和确认删除 save_root 外的真实路径",
     "default": true
   },
   "simple_mode": {
@@ -26,7 +26,7 @@
   "allow_all_users": {
     "type": "bool",
     "description": "允许所有人只读访问",
-    "hint": "开启后，非管理员只能使用查看、搜索、预览和获取文件类命令",
+    "hint": "开启后，非管理员只能使用查看、搜索和获取文件类命令",
     "default": false
   },
   "public_read_dir": {
@@ -86,29 +86,6 @@
     "type": "bool",
     "description": "启用操作日志",
     "default": true
-  },
-  "preview_text_chars": {
-    "type": "int",
-    "description": "文本预览最大字符数",
-    "default": 1200,
-    "minimum": 100,
-    "maximum": 10000
-  },
-  "path_import_max_files": {
-    "type": "int",
-    "description": "路径导入单次最大文件数",
-    "hint": "/add 可从任意本机路径或 NAS 挂载路径导入，目录过大时按此上限截断",
-    "default": 2000,
-    "minimum": 1,
-    "maximum": 100000
-  },
-  "watch_interval_minutes": {
-    "type": "int",
-    "description": "监控目录自动导入间隔 (分钟)",
-    "hint": "0 表示关闭；开启后按 /watch 添加的目录定期导入新增文件",
-    "default": 0,
-    "minimum": 0,
-    "maximum": 10080
   },
   "export_max_files": {
     "type": "int",

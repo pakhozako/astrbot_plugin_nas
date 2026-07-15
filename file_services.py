@@ -1,4 +1,4 @@
-"""File, index, preview, import, and export helpers for NAS commands."""
+"""File, index, export, and send helpers for NAS commands."""
 
 import asyncio
 import difflib
@@ -15,7 +15,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import File
 
-from .constants import IMAGE_EXTENSIONS, INTERNAL_DIRS, INTERNAL_FILES, TEXT_EXTENSIONS
+from .constants import INTERNAL_DIRS, INTERNAL_FILES
 from .utils import file_hash, file_fingerprint, format_size, FileClassifier
 
 
@@ -429,27 +429,6 @@ class FileServiceMixin:
 
         return await self._valid_existing_rows(rows, event), None
 
-    async def _run_watch_scan(self) -> dict:
-        watches = await asyncio.to_thread(self.index.list_watches)
-        counts = {"saved": 0, "duplicate": 0, "skipped": 0, "error": 0, "missing": 0, "total": 0}
-        for item in watches:
-            source = Path(item["path"])
-            if not source.exists():
-                counts["missing"] += 1
-                continue
-            if source.is_symlink():
-                counts["skipped"] += 1
-                continue
-            files, truncated = await asyncio.to_thread(self._collect_import_files, source)
-            if truncated:
-                self._log_info(f"[NAS] 监控目录已按上限截断: {source}")
-            for file_path in files:
-                result = await self._archive_file(file_path, "watch", item["category"] or None)
-                status = result["status"]
-                counts[status if status in counts else "error"] += 1
-                counts["total"] += 1
-        return counts
-
     async def _move_info_to_dir(
         self,
         info: dict,
@@ -679,32 +658,6 @@ class FileServiceMixin:
             "source": str(source),
         }
 
-    def _collect_import_files(self, source: Path) -> tuple[list[Path], bool]:
-        if source.is_file():
-            return ([] if self._skip_internal_file(source) else [source]), False
-        files = []
-        stack = [source]
-        while stack:
-            current = stack.pop()
-            try:
-                entries = list(current.iterdir())
-            except OSError:
-                continue
-            for entry in entries:
-                if entry.is_symlink():
-                    continue
-                if entry.is_dir():
-                    if self._skip_internal_dir(entry):
-                        continue
-                    stack.append(entry)
-                elif entry.is_file():
-                    if self._skip_internal_file(entry):
-                        continue
-                    files.append(entry)
-                    if len(files) >= self.path_import_max_files:
-                        return files, True
-        return files, False
-
     def _skip_internal_dir(self, path: Path) -> bool:
         try:
             rel = path.resolve().relative_to(self.root)
@@ -720,46 +673,6 @@ class FileServiceMixin:
         if bool(rel.parts) and rel.parts[0] in INTERNAL_DIRS:
             return True
         return rel.parent == Path(".") and rel.name in INTERNAL_FILES
-
-    @staticmethod
-    def _is_text_file(path: Path) -> bool:
-        return path.suffix.lower().lstrip(".") in TEXT_EXTENSIONS
-
-    @staticmethod
-    def _is_image_file(path: Path) -> bool:
-        return path.suffix.lower().lstrip(".") in IMAGE_EXTENSIONS
-
-    def _read_text_preview(self, path: Path) -> str:
-        raw = path.read_bytes()[: max(1, self.preview_text_chars) * 4]
-        for encoding in ("utf-8", "gb18030", "latin-1"):
-            try:
-                text = raw.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            text = raw.decode("utf-8", errors="replace")
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        if len(text) > self.preview_text_chars:
-            text = text[: self.preview_text_chars] + "\n..."
-        return text
-
-    def _image_preview_path(self, path: Path) -> Path:
-        try:
-            from PIL import Image as PILImage
-
-            safe_stem = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in path.stem)[:80] or "preview"
-            preview = self.root / ".previews" / f"{safe_stem}_{path.stat().st_mtime_ns}.jpg"
-            if preview.exists():
-                return preview
-            with PILImage.open(path) as img:
-                img.thumbnail((1024, 1024))
-                if img.mode not in {"RGB", "L"}:
-                    img = img.convert("RGB")
-                img.save(preview, "JPEG", quality=85)
-            return preview
-        except Exception:
-            return path
 
     def _schedule_recall(
         self,
